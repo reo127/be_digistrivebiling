@@ -26,6 +26,7 @@ app.use('/api/shop', shopRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/invoices', invoiceRoutes);
+app.use('/', (req, res) => {return {message: "This Service is running"}})
 
 // Health check
 app.get('/', (req, res) => {
