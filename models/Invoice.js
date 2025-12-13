@@ -7,6 +7,11 @@ const invoiceItemSchema = new mongoose.Schema({
     required: true
   },
   productName: String,
+  // Batch tracking for FIFO (optional for backwards compatibility)
+  batch: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Batch'
+  },
   batchNo: String,
   expiryDate: Date,
   hsnCode: String,
@@ -16,19 +21,34 @@ const invoiceItemSchema = new mongoose.Schema({
   },
   unit: String,
   mrp: Number,
+  purchasePrice: Number, // For COGS calculation
   sellingPrice: {
     type: Number,
     required: true
+  },
+  discount: {
+    type: Number,
+    default: 0
+  },
+  discountAmount: {
+    type: Number,
+    default: 0
   },
   gstRate: {
     type: Number,
     required: true
   },
+  taxableAmount: Number,
   taxAmount: Number,
   cgst: Number,
   sgst: Number,
   igst: Number,
-  totalAmount: Number
+  totalAmount: Number,
+  // Track if returned
+  returnedQuantity: {
+    type: Number,
+    default: 0
+  }
 });
 
 const invoiceSchema = new mongoose.Schema({
@@ -51,8 +71,18 @@ const invoiceSchema = new mongoose.Schema({
   },
   customerPhone: String,
   customerAddress: String,
+  customerCity: String,
+  customerState: String,
   customerGstin: String,
   items: [invoiceItemSchema],
+  // Prescription tracking for Schedule H/H1/X drugs
+  prescriptionRequired: {
+    type: Boolean,
+    default: false
+  },
+  prescriptionNumber: String,
+  doctorName: String,
+  prescriptionDate: Date,
   taxType: {
     type: String,
     enum: ['CGST_SGST', 'IGST'],
@@ -108,6 +138,39 @@ const invoiceSchema = new mongoose.Schema({
   invoiceDate: {
     type: Date,
     default: Date.now
+  },
+  // For returns tracking
+  isReturned: {
+    type: Boolean,
+    default: false
+  },
+  partiallyReturned: {
+    type: Boolean,
+    default: false
+  },
+  returnedAmount: {
+    type: Number,
+    default: 0
+  },
+  // E-way bill (for inter-state sales > 50000)
+  eWayBillRequired: {
+    type: Boolean,
+    default: false
+  },
+  eWayBillNumber: String,
+  eWayBillDate: Date,
+  transporterName: String,
+  vehicleNumber: String,
+  distance: Number,
+  // For accounting - double entry ledger references
+  ledgerEntries: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Ledger'
+  }],
+  // Cost of goods sold (for P&L)
+  cogs: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true

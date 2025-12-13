@@ -2,7 +2,12 @@ import express from 'express';
 import Invoice from '../models/Invoice.js';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
+import ShopSettings from '../models/ShopSettings.js';
+import Batch from '../models/Batch.js';
 import { protect } from '../middleware/auth.js';
+import { calculateItemGST, calculateTotals, determineTaxType } from '../utils/gstCalculations.js';
+import { getBatchesForSale, deductBatchStock, calculateCOGS } from '../utils/inventoryManager.js';
+import { postSalesToLedger } from '../utils/ledgerHelper.js';
 
 const router = express.Router();
 
@@ -97,7 +102,7 @@ router.get('/:id', protect, async (req, res) => {
     const invoice = await Invoice.findOne({
       _id: req.params.id,
       userId: req.user._id
-    }).populate('customer').populate('items.product');
+    }).populate('customer').populate('items.product').populate('items.batch');
 
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });
@@ -110,131 +115,209 @@ router.get('/:id', protect, async (req, res) => {
 });
 
 // @route   POST /api/invoices
-// @desc    Create invoice
+// @desc    Create invoice with FIFO batch selection
 // @access  Private
 router.post('/', protect, async (req, res) => {
   try {
-    const { items, customer, ...invoiceData } = req.body;
+    const { items, customer: customerId, ...invoiceData } = req.body;
 
-    // Calculate totals and update stock
-    const processedItems = await Promise.all(
-      items.map(async (item) => {
-        const product = await Product.findById(item.product);
+    // Get shop settings for tax type determination
+    const shopSettings = await ShopSettings.findOne({ userId: req.user._id });
 
-        if (!product) {
-          throw new Error(`Product not found: ${item.product}`);
-        }
-
-        // Check stock
-        if (product.stockQuantity < item.quantity) {
-          throw new Error(`Insufficient stock for ${product.name}`);
-        }
-
-        // Calculate tax
-        const itemTotal = item.sellingPrice * item.quantity;
-        const taxAmount = (itemTotal * item.gstRate) / 100;
-
-        let cgst = 0, sgst = 0, igst = 0;
-
-        if (invoiceData.taxType === 'CGST_SGST') {
-          cgst = taxAmount / 2;
-          sgst = taxAmount / 2;
-        } else {
-          igst = taxAmount;
-        }
-
-        // Update stock
-        product.stockQuantity -= item.quantity;
-        await product.save();
-
-        return {
-          ...item,
-          productName: product.name,
-          batchNo: product.batchNo,
-          expiryDate: product.expiryDate,
-          hsnCode: product.hsnCode,
-          unit: product.unit,
-          mrp: product.mrp,
-          taxAmount,
-          cgst,
-          sgst,
-          igst,
-          totalAmount: itemTotal + taxAmount
-        };
-      })
-    );
-
-    // Calculate invoice totals
-    const subtotal = processedItems.reduce((sum, item) =>
-      sum + (item.sellingPrice * item.quantity), 0);
-
-    const totalTax = processedItems.reduce((sum, item) =>
-      sum + item.taxAmount, 0);
-
-    const totalCGST = processedItems.reduce((sum, item) =>
-      sum + (item.cgst || 0), 0);
-
-    const totalSGST = processedItems.reduce((sum, item) =>
-      sum + (item.sgst || 0), 0);
-
-    const totalIGST = processedItems.reduce((sum, item) =>
-      sum + (item.igst || 0), 0);
-
-    const grandTotal = subtotal + totalTax - (invoiceData.discount || 0);
-    const roundOff = Math.round(grandTotal) - grandTotal;
-    const finalTotal = Math.round(grandTotal);
-
-    // Get customer details
+    // Determine tax type based on customer state
+    let taxType = invoiceData.taxType || 'CGST_SGST';
     let customerData = {
       customerName: invoiceData.customerName,
       customerPhone: invoiceData.customerPhone,
       customerAddress: invoiceData.customerAddress,
+      customerCity: invoiceData.customerCity,
+      customerState: invoiceData.customerState,
       customerGstin: invoiceData.customerGstin
     };
 
-    if (customer) {
-      const customerDoc = await Customer.findById(customer);
-      if (customerDoc) {
+    // Get customer details if provided
+    let customer = null;
+    if (customerId) {
+      customer = await Customer.findOne({
+        _id: customerId,
+        userId: req.user._id
+      });
+
+      if (customer) {
         customerData = {
-          customer: customerDoc._id,
-          customerName: customerDoc.name,
-          customerPhone: customerDoc.phone,
-          customerAddress: customerDoc.address,
-          customerGstin: customerDoc.gstin
+          customer: customer._id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          customerAddress: customer.address,
+          customerCity: customer.city,
+          customerState: customer.state,
+          customerGstin: customer.gstin
         };
 
-        // Update customer outstanding
-        if (invoiceData.paymentStatus !== 'PAID') {
-          customerDoc.outstandingBalance += (invoiceData.balanceAmount || finalTotal);
-          await customerDoc.save();
+        // Determine tax type based on customer state
+        if (shopSettings && customer.state) {
+          taxType = determineTaxType(shopSettings.state, customer.state);
         }
       }
     }
 
+    // Process items with FIFO batch selection
+    const processedItems = [];
+
+    for (const item of items) {
+      // Validate product
+      const product = await Product.findOne({
+        _id: item.product,
+        userId: req.user._id
+      });
+
+      if (!product) {
+        throw new Error(`Product not found: ${item.product}`);
+      }
+
+      // Check total available stock
+      if (product.stockQuantity < item.quantity) {
+        throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stockQuantity}, Requested: ${item.quantity}`);
+      }
+
+      // FIFO batch selection - two modes:
+      // Mode 1: User selects specific batch (item.batch provided)
+      // Mode 2: Automatic FIFO selection (item.batch not provided)
+
+      if (item.batch) {
+        // Manual batch selection
+        const batch = await Batch.findOne({
+          _id: item.batch,
+          userId: req.user._id,
+          product: product._id,
+          isActive: true
+        });
+
+        if (!batch) {
+          throw new Error(`Batch not found or inactive for ${product.name}`);
+        }
+
+        if (batch.quantity < item.quantity) {
+          throw new Error(`Insufficient stock in selected batch for ${product.name}`);
+        }
+
+        // Calculate GST for this item
+        const itemWithGST = calculateItemGST({
+          quantity: item.quantity,
+          sellingPrice: item.sellingPrice || batch.sellingPrice,
+          discount: item.discount || 0,
+          gstRate: batch.gstRate
+        }, taxType);
+
+        // Deduct from batch
+        await deductBatchStock(batch._id, item.quantity);
+
+        processedItems.push({
+          product: product._id,
+          productName: product.name,
+          batch: batch._id,
+          batchNo: batch.batchNo,
+          expiryDate: batch.expiryDate,
+          hsnCode: product.hsnCode,
+          quantity: item.quantity,
+          unit: product.unit,
+          mrp: batch.mrp,
+          purchasePrice: batch.purchasePrice, // For COGS
+          sellingPrice: item.sellingPrice || batch.sellingPrice,
+          ...itemWithGST
+        });
+
+      } else {
+        // Automatic FIFO selection
+        const batchesForSale = await getBatchesForSale(product._id, req.user._id, item.quantity);
+
+        for (const batchSale of batchesForSale) {
+          // Calculate GST for this portion
+          const itemWithGST = calculateItemGST({
+            quantity: batchSale.quantity,
+            sellingPrice: item.sellingPrice || batchSale.sellingPrice,
+            discount: item.discount || 0,
+            gstRate: batchSale.gstRate
+          }, taxType);
+
+          // Deduct from batch
+          await deductBatchStock(batchSale.batch, batchSale.quantity);
+
+          processedItems.push({
+            product: product._id,
+            productName: product.name,
+            batch: batchSale.batch,
+            batchNo: batchSale.batchNo,
+            expiryDate: batchSale.expiryDate,
+            hsnCode: product.hsnCode,
+            quantity: batchSale.quantity,
+            unit: product.unit,
+            mrp: batchSale.mrp,
+            purchasePrice: batchSale.purchasePrice, // For COGS
+            sellingPrice: item.sellingPrice || batchSale.sellingPrice,
+            ...itemWithGST
+          });
+        }
+      }
+    }
+
+    // Calculate invoice totals
+    const totals = calculateTotals(processedItems, {}, invoiceData.discount || 0);
+
+    // Calculate COGS (Cost of Goods Sold)
+    const cogs = await calculateCOGS(processedItems);
+
+    // Calculate payment details
+    const paidAmount = invoiceData.paidAmount || 0;
+    const balanceAmount = totals.grandTotal - paidAmount;
+    const paymentStatus = balanceAmount <= 0 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    // Check if E-way bill is required (inter-state sales > 50000)
+    const eWayBillRequired = taxType === 'IGST' && totals.grandTotal > 50000;
+
+    // Create invoice
     const invoice = await Invoice.create({
       userId: req.user._id,
       ...customerData,
       items: processedItems,
-      subtotal,
-      totalTax,
-      totalCGST,
-      totalSGST,
-      totalIGST,
-      discount: invoiceData.discount || 0,
-      roundOff,
-      grandTotal: finalTotal,
-      taxType: invoiceData.taxType,
-      paymentStatus: invoiceData.paymentStatus || 'UNPAID',
+      ...totals,
+      taxType,
+      paymentStatus,
       paymentMethod: invoiceData.paymentMethod || 'CASH',
-      paidAmount: invoiceData.paidAmount || 0,
-      balanceAmount: invoiceData.balanceAmount || (invoiceData.paymentStatus === 'PAID' ? 0 : finalTotal),
+      paidAmount,
+      balanceAmount,
       paymentDetails: invoiceData.paymentDetails,
       notes: invoiceData.notes,
-      invoiceDate: invoiceData.invoiceDate || new Date()
+      invoiceDate: invoiceData.invoiceDate || new Date(),
+      cogs,
+      // Prescription tracking
+      prescriptionRequired: invoiceData.prescriptionRequired || false,
+      prescriptionNumber: invoiceData.prescriptionNumber,
+      doctorName: invoiceData.doctorName,
+      prescriptionDate: invoiceData.prescriptionDate,
+      // E-way bill
+      eWayBillRequired,
+      eWayBillNumber: invoiceData.eWayBillNumber,
+      eWayBillDate: invoiceData.eWayBillDate,
+      transporterName: invoiceData.transporterName,
+      vehicleNumber: invoiceData.vehicleNumber,
+      distance: invoiceData.distance
     });
+
+    // Update customer outstanding
+    if (customer && paymentStatus !== 'PAID') {
+      customer.outstandingBalance += balanceAmount;
+      await customer.save();
+    }
+
+    // Post to ledger (double-entry accounting)
+    const ledgerEntries = await postSalesToLedger(invoice, req.user._id);
+    invoice.ledgerEntries = ledgerEntries.map(entry => entry._id);
+    await invoice.save();
 
     res.status(201).json(invoice);
   } catch (error) {
+    console.error('Invoice creation error:', error);
     res.status(500).json({ message: error.message });
   }
 });

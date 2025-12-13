@@ -1,0 +1,177 @@
+import express from 'express';
+import PurchaseReturn from '../models/PurchaseReturn.js';
+import Purchase from '../models/Purchase.js';
+import Supplier from '../models/Supplier.js';
+import { protect } from '../middleware/auth.js';
+import { calculateItemGST, calculateTotals } from '../utils/gstCalculations.js';
+import { deductBatchStock } from '../utils/inventoryManager.js';
+import { postPurchaseReturnToLedger } from '../utils/ledgerHelper.js';
+
+const router = express.Router();
+
+// @route   GET /api/purchase-returns
+// @desc    Get all purchase returns
+// @access  Private
+router.get('/', protect, async (req, res) => {
+  try {
+    const { startDate, endDate, supplier } = req.query;
+    let query = { userId: req.user._id };
+
+    if (startDate && endDate) {
+      query.returnDate = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+
+    if (supplier) query.supplier = supplier;
+
+    const returns = await PurchaseReturn.find(query)
+      .populate('supplier', 'name gstin')
+      .populate('originalPurchase', 'purchaseNumber')
+      .sort({ createdAt: -1 });
+
+    res.json(returns);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   GET /api/purchase-returns/:id
+// @desc    Get single purchase return
+// @access  Private
+router.get('/:id', protect, async (req, res) => {
+  try {
+    const purchaseReturn = await PurchaseReturn.findOne({
+      _id: req.params.id,
+      userId: req.user._id
+    })
+      .populate('supplier')
+      .populate('originalPurchase')
+      .populate('items.product')
+      .populate('items.batch');
+
+    if (!purchaseReturn) {
+      return res.status(404).json({ message: 'Purchase return not found' });
+    }
+
+    res.json(purchaseReturn);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   POST /api/purchase-returns
+// @desc    Create purchase return (Debit Note)
+// @access  Private
+router.post('/', protect, async (req, res) => {
+  try {
+    const { originalPurchase: purchaseId, items, reason, reasonDescription } = req.body;
+
+    // Validate original purchase
+    const purchase = await Purchase.findOne({
+      _id: purchaseId,
+      userId: req.user._id
+    }).populate('supplier');
+
+    if (!purchase) {
+      return res.status(404).json({ message: 'Original purchase not found' });
+    }
+
+    // Process return items
+    const processedItems = [];
+    for (const item of items) {
+      // Extract batch ID if batch is an object (frontend might send full batch object)
+      const batchId = item.batch?._id || item.batch;
+      const productId = item.product?._id || item.product;
+
+      // Find original purchase item
+      // Match by batch if available, otherwise match by product
+      let originalItem;
+      if (batchId) {
+        originalItem = purchase.items.find(
+          pi => pi.batch && pi.batch.toString() === batchId.toString()
+        );
+      } else {
+        originalItem = purchase.items.find(
+          pi => pi.product.toString() === productId.toString()
+        );
+      }
+
+      if (!originalItem) {
+        throw new Error('Item not found in original purchase');
+      }
+
+      // Validate return quantity
+      if (item.quantity > originalItem.quantity) {
+        throw new Error(`Cannot return more than purchased quantity for item`);
+      }
+
+      // Calculate GST for return item
+      const itemWithGST = calculateItemGST({
+        ...item,
+        purchasePrice: originalItem.purchasePrice,
+        gstRate: originalItem.gstRate
+      }, purchase.taxType);
+
+      // Deduct from batch inventory (removing returned stock) - only if batch exists
+      if (batchId) {
+        await deductBatchStock(batchId, item.quantity);
+      }
+
+      processedItems.push({
+        ...itemWithGST,
+        product: originalItem.product,
+        productName: originalItem.productName,
+        batch: batchId || null,
+        batchNo: originalItem.batchNo,
+        expiryDate: originalItem.expiryDate,
+        hsnCode: originalItem.hsnCode,
+        unit: originalItem.unit
+      });
+    }
+
+    // Calculate totals
+    const totals = calculateTotals(processedItems, {}, 0);
+
+    // Create purchase return
+    const purchaseReturn = await PurchaseReturn.create({
+      userId: req.user._id,
+      supplier: purchase.supplier._id,
+      supplierName: purchase.supplierName,
+      supplierGstin: purchase.supplierGstin,
+      originalPurchase: purchase._id,
+      originalPurchaseNumber: purchase.purchaseNumber,
+      reason,
+      reasonDescription,
+      items: processedItems,
+      taxType: purchase.taxType,
+      ...totals
+    });
+
+    // Update original purchase
+    purchase.isReturned = true;
+    purchase.returnedAmount += totals.grandTotal;
+    await purchase.save();
+
+    // Update supplier balance
+    const supplier = await Supplier.findById(purchase.supplier);
+    if (supplier) {
+      supplier.currentBalance -= totals.grandTotal;
+      supplier.totalReturns += totals.grandTotal;
+      await supplier.save();
+    }
+
+    // Post to ledger
+    const ledgerEntries = await postPurchaseReturnToLedger(purchaseReturn, req.user._id);
+    purchaseReturn.ledgerEntries = ledgerEntries.map(entry => entry._id);
+    await purchaseReturn.save();
+
+    res.status(201).json(purchaseReturn);
+  } catch (error) {
+    console.error('Purchase return error:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+export default router;

@@ -7,6 +7,14 @@ import shopRoutes from './routes/shopRoutes.js';
 import productRoutes from './routes/productRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
 import invoiceRoutes from './routes/invoiceRoutes.js';
+import supplierRoutes from './routes/supplierRoutes.js';
+import purchaseRoutes from './routes/purchaseRoutes.js';
+import purchaseReturnRoutes from './routes/purchaseReturnRoutes.js';
+import salesReturnRoutes from './routes/salesReturnRoutes.js';
+import expenseRoutes from './routes/expenseRoutes.js';
+import paymentRoutes from './routes/paymentRoutes.js';
+import inventoryRoutes from './routes/inventoryRoutes.js';
+import reportsRoutes from './routes/reportsRoutes.js';
 
 dotenv.config();
 
@@ -26,6 +34,14 @@ app.use('/api/shop', shopRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/invoices', invoiceRoutes);
+app.use('/api/suppliers', supplierRoutes);
+app.use('/api/purchases', purchaseRoutes);
+app.use('/api/purchase-returns', purchaseReturnRoutes);
+app.use('/api/sales-returns', salesReturnRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api/reports', reportsRoutes);
 
 
 // Health check
