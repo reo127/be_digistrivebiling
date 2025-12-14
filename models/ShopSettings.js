@@ -45,10 +45,6 @@ const shopSettingsSchema = new mongoose.Schema({
     uppercase: true,
     trim: true
   },
-  drugLicense: {
-    type: String,
-    trim: true
-  },
   logo: {
     type: String
   },

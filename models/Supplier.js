@@ -53,10 +53,6 @@ const supplierSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-  drugLicenseNo: {
-    type: String,
-    trim: true
-  },
   bankDetails: {
     bankName: String,
     accountNumber: String,
