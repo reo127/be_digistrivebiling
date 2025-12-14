@@ -4,6 +4,19 @@ import { protect } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// @route   GET /api/shop/public/name
+// @desc    Get shop name (public access for login/signup pages)
+// @access  Public
+router.get('/public/name', async (req, res) => {
+  try {
+    // Get the first shop settings (assuming single shop)
+    const settings = await ShopSettings.findOne().select('shopName');
+    res.json({ shopName: settings?.shopName || 'Billing Software' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @route   GET /api/shop
 // @desc    Get shop settings
 // @access  Private
