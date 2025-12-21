@@ -3,6 +3,8 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
+import organizationRoutes from './routes/organizationRoutes.js';
 import shopRoutes from './routes/shopRoutes.js';
 import productRoutes from './routes/productRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
@@ -30,6 +32,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes); // Super admin routes
+app.use('/api/organization', organizationRoutes); // Organization management routes
 app.use('/api/shop', shopRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/customers', customerRoutes);

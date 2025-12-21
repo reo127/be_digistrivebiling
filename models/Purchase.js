@@ -65,6 +65,12 @@ const purchaseItemSchema = new mongoose.Schema({
 });
 
 const purchaseSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -186,11 +192,17 @@ const purchaseSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-increment purchase number
-purchaseSchema.pre('save', async function(next) {
+// Indexes for multi-tenant queries
+purchaseSchema.index({ organizationId: 1, purchaseDate: -1 });
+purchaseSchema.index({ organizationId: 1, supplier: 1 });
+purchaseSchema.index({ organizationId: 1, paymentStatus: 1 });
+
+// Auto-increment purchase number (per organization)
+purchaseSchema.pre('save', async function (next) {
   if (this.isNew) {
-    const lastPurchase = await this.constructor.findOne({ userId: this.userId })
-      .sort({ createdAt: -1 });
+    const lastPurchase = await this.constructor.findOne({
+      organizationId: this.organizationId
+    }).sort({ createdAt: -1 });
 
     let nextNumber = 1;
     if (lastPurchase && lastPurchase.purchaseNumber) {

@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const paymentSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -78,12 +84,12 @@ const paymentSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-increment payment number
-paymentSchema.pre('save', async function(next) {
+// Auto-increment payment number (per organization)
+paymentSchema.pre('save', async function (next) {
   if (this.isNew && !this.paymentNumber) {
     const prefix = this.type === 'RECEIVED' ? 'RCPT' : 'PAY';
     const lastPayment = await this.constructor.findOne({
-      userId: this.userId,
+      organizationId: this.organizationId,
       type: this.type
     }).sort({ createdAt: -1 });
 
@@ -101,9 +107,9 @@ paymentSchema.pre('save', async function(next) {
   next();
 });
 
-// Indexes
-paymentSchema.index({ userId: 1, date: -1 });
-paymentSchema.index({ userId: 1, partyType: 1, party: 1 });
+// Indexes for multi-tenant queries
+paymentSchema.index({ organizationId: 1, date: -1 });
+paymentSchema.index({ organizationId: 1, partyType: 1, party: 1 });
 
 const Payment = mongoose.model('Payment', paymentSchema);
 export default Payment;

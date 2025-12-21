@@ -36,6 +36,12 @@ const purchaseReturnItemSchema = new mongoose.Schema({
 });
 
 const purchaseReturnSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -124,11 +130,16 @@ const purchaseReturnSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-increment debit note number
-purchaseReturnSchema.pre('save', async function(next) {
+// Indexes for multi-tenant queries
+purchaseReturnSchema.index({ organizationId: 1, returnDate: -1 });
+purchaseReturnSchema.index({ organizationId: 1, supplier: 1 });
+
+// Auto-increment debit note number (per organization)
+purchaseReturnSchema.pre('save', async function (next) {
   if (this.isNew) {
-    const lastReturn = await this.constructor.findOne({ userId: this.userId })
-      .sort({ createdAt: -1 });
+    const lastReturn = await this.constructor.findOne({
+      organizationId: this.organizationId
+    }).sort({ createdAt: -1 });
 
     let nextNumber = 1;
     if (lastReturn && lastReturn.debitNoteNumber) {

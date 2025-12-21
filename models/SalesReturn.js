@@ -45,6 +45,12 @@ const salesReturnItemSchema = new mongoose.Schema({
 });
 
 const salesReturnSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -140,11 +146,16 @@ const salesReturnSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-increment credit note number
-salesReturnSchema.pre('save', async function(next) {
+// Indexes for multi-tenant queries
+salesReturnSchema.index({ organizationId: 1, returnDate: -1 });
+salesReturnSchema.index({ organizationId: 1, customer: 1 });
+
+// Auto-increment credit note number (per organization)
+salesReturnSchema.pre('save', async function (next) {
   if (this.isNew) {
-    const lastReturn = await this.constructor.findOne({ userId: this.userId })
-      .sort({ createdAt: -1 });
+    const lastReturn = await this.constructor.findOne({
+      organizationId: this.organizationId
+    }).sort({ createdAt: -1 });
 
     let nextNumber = 1;
     if (lastReturn && lastReturn.creditNoteNumber) {

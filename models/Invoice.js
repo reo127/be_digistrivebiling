@@ -52,6 +52,13 @@ const invoiceItemSchema = new mongoose.Schema({
 });
 
 const invoiceSchema = new mongoose.Schema({
+  // Multi-tenant Organization Link
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -176,11 +183,19 @@ const invoiceSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-increment invoice number
-invoiceSchema.pre('save', async function(next) {
+// Indexes for multi-tenant performance
+invoiceSchema.index({ organizationId: 1, invoiceDate: -1 });
+invoiceSchema.index({ organizationId: 1, invoiceNumber: 1 });
+invoiceSchema.index({ organizationId: 1, customer: 1 });
+invoiceSchema.index({ organizationId: 1, paymentStatus: 1 });
+
+// Auto-increment invoice number (per organization)
+invoiceSchema.pre('save', async function (next) {
   if (this.isNew) {
-    const lastInvoice = await this.constructor.findOne({ userId: this.userId })
-      .sort({ createdAt: -1 });
+    // Find last invoice for this organization
+    const lastInvoice = await this.constructor.findOne({
+      organizationId: this.organizationId
+    }).sort({ createdAt: -1 });
 
     let nextNumber = 1;
     if (lastInvoice && lastInvoice.invoiceNumber) {

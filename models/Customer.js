@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const customerSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -54,7 +60,9 @@ const customerSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for search
+// Indexes for multi-tenant queries
+customerSchema.index({ organizationId: 1, name: 1 });
+customerSchema.index({ organizationId: 1, isActive: 1 });
 customerSchema.index({ name: 'text', phone: 'text' });
 
 const Customer = mongoose.model('Customer', customerSchema);

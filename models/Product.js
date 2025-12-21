@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const productSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -76,7 +82,10 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for search
+// Indexes for multi-tenant search and queries
+productSchema.index({ organizationId: 1, name: 1 });
+productSchema.index({ organizationId: 1, isActive: 1 });
+productSchema.index({ organizationId: 1, stockQuantity: 1 });
 productSchema.index({ name: 'text', genericName: 'text', manufacturer: 'text' });
 
 const Product = mongoose.model('Product', productSchema);

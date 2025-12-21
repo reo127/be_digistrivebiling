@@ -1,17 +1,23 @@
 import express from 'express';
 import Supplier from '../models/Supplier.js';
 import { protect } from '../middleware/auth.js';
+import tenantIsolation, { addOrgFilter } from '../middleware/tenantIsolation.js';
+import { requirePermission } from '../middleware/requireSuperAdmin.js';
 import { validateGSTIN } from '../utils/gstCalculations.js';
 
 const router = express.Router();
 
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
+
 // @route   GET /api/suppliers
 // @desc    Get all suppliers
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { search, isActive } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req, {});
 
     if (isActive !== undefined) {
       query.isActive = isActive === 'true';
@@ -36,13 +42,13 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/suppliers/stats
 // @desc    Get supplier statistics
 // @access  Private
-router.get('/stats', protect, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     const [totalSuppliers, activeSuppliers, totalPayable] = await Promise.all([
-      Supplier.countDocuments({ userId: req.user._id }),
-      Supplier.countDocuments({ userId: req.user._id, isActive: true }),
+      Supplier.countDocuments(addOrgFilter(req, {})),
+      Supplier.countDocuments(addOrgFilter(req, { isActive: true })),
       Supplier.aggregate([
-        { $match: { userId: req.user._id, currentBalance: { $gt: 0 } } },
+        { $match: addOrgFilter(req, { currentBalance: { $gt: 0 } }) },
         { $group: { _id: null, total: { $sum: '$currentBalance' } } }
       ])
     ]);
@@ -60,12 +66,11 @@ router.get('/stats', protect, async (req, res) => {
 // @route   GET /api/suppliers/:id
 // @desc    Get single supplier
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const supplier = await Supplier.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const supplier = await Supplier.findOne(
+      addOrgFilter(req, { _id: req.params.id })
+    );
 
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found' });
@@ -79,8 +84,8 @@ router.get('/:id', protect, async (req, res) => {
 
 // @route   POST /api/suppliers
 // @desc    Create supplier
-// @access  Private
-router.post('/', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.post('/', requirePermission('canManageSuppliers'), async (req, res) => {
   try {
     const { gstin, name, phone, state } = req.body;
 
@@ -99,10 +104,9 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Check if supplier with same GSTIN already exists
-    const existingSupplier = await Supplier.findOne({
-      userId: req.user._id,
-      gstin: gstin.toUpperCase()
-    });
+    const existingSupplier = await Supplier.findOne(
+      addOrgFilter(req, { gstin: gstin.toUpperCase() })
+    );
 
     if (existingSupplier) {
       return res.status(400).json({
@@ -112,6 +116,7 @@ router.post('/', protect, async (req, res) => {
 
     const supplier = await Supplier.create({
       ...req.body,
+      organizationId: req.organizationId,
       userId: req.user._id,
       currentBalance: req.body.openingBalance || 0
     });
@@ -124,13 +129,12 @@ router.post('/', protect, async (req, res) => {
 
 // @route   PUT /api/suppliers/:id
 // @desc    Update supplier
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.put('/:id', requirePermission('canManageSuppliers'), async (req, res) => {
   try {
-    const supplier = await Supplier.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const supplier = await Supplier.findOne(
+      addOrgFilter(req, { _id: req.params.id })
+    );
 
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found' });
@@ -143,11 +147,12 @@ router.put('/:id', protect, async (req, res) => {
       }
 
       // Check if new GSTIN already exists
-      const existingSupplier = await Supplier.findOne({
-        userId: req.user._id,
-        gstin: req.body.gstin.toUpperCase(),
-        _id: { $ne: supplier._id }
-      });
+      const existingSupplier = await Supplier.findOne(
+        addOrgFilter(req, {
+          gstin: req.body.gstin.toUpperCase(),
+          _id: { $ne: supplier._id }
+        })
+      );
 
       if (existingSupplier) {
         return res.status(400).json({
@@ -158,7 +163,7 @@ router.put('/:id', protect, async (req, res) => {
 
     // Update supplier
     Object.keys(req.body).forEach(key => {
-      if (key !== 'userId' && key !== 'currentBalance' && key !== 'totalPurchases' && key !== 'totalReturns') {
+      if (key !== 'userId' && key !== 'organizationId' && key !== 'currentBalance' && key !== 'totalPurchases' && key !== 'totalReturns') {
         supplier[key] = req.body[key];
       }
     });
@@ -172,13 +177,12 @@ router.put('/:id', protect, async (req, res) => {
 
 // @route   DELETE /api/suppliers/:id
 // @desc    Delete/Deactivate supplier
-// @access  Private
-router.delete('/:id', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.delete('/:id', requirePermission('canManageSuppliers'), async (req, res) => {
   try {
-    const supplier = await Supplier.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const supplier = await Supplier.findOne(
+      addOrgFilter(req, { _id: req.params.id })
+    );
 
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found' });
@@ -204,13 +208,12 @@ router.delete('/:id', protect, async (req, res) => {
 // @route   GET /api/suppliers/:id/ledger
 // @desc    Get supplier ledger
 // @access  Private
-router.get('/:id/ledger', protect, async (req, res) => {
+router.get('/:id/ledger', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const supplier = await Supplier.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const supplier = await Supplier.findOne(
+      addOrgFilter(req, { _id: req.params.id })
+    );
 
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found' });
@@ -220,6 +223,7 @@ router.get('/:id/ledger', protect, async (req, res) => {
     const { getPartyLedger } = await import('../utils/ledgerHelper.js');
 
     const ledgerEntries = await getPartyLedger(
+      req.organizationId,
       req.user._id,
       'SUPPLIER',
       supplier._id,

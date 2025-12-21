@@ -1,16 +1,22 @@
 import express from 'express';
 import Customer from '../models/Customer.js';
 import { protect } from '../middleware/auth.js';
+import tenantIsolation, { addOrgFilter } from '../middleware/tenantIsolation.js';
+import { requirePermission } from '../middleware/requireSuperAdmin.js';
 
 const router = express.Router();
+
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
 
 // @route   GET /api/customers
 // @desc    Get all customers
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { search } = req.query;
-    let query = { userId: req.user._id, isActive: true };
+    let query = addOrgFilter(req, { isActive: true });
 
     if (search) {
       query.$text = { $search: search };
@@ -26,12 +32,11 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/customers/:id
 // @desc    Get single customer
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const customer = await Customer.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const customer = await Customer.findOne(
+      addOrgFilter(req, { _id: req.params.id })
+    );
 
     if (!customer) {
       return res.status(404).json({ message: 'Customer not found' });
@@ -45,11 +50,12 @@ router.get('/:id', protect, async (req, res) => {
 
 // @route   POST /api/customers
 // @desc    Create customer
-// @access  Private
-router.post('/', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.post('/', requirePermission('canManageCustomers'), async (req, res) => {
   try {
     const customer = await Customer.create({
       ...req.body,
+      organizationId: req.organizationId,
       userId: req.user._id
     });
     res.status(201).json(customer);
@@ -60,11 +66,11 @@ router.post('/', protect, async (req, res) => {
 
 // @route   PUT /api/customers/:id
 // @desc    Update customer
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.put('/:id', requirePermission('canManageCustomers'), async (req, res) => {
   try {
     const customer = await Customer.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user._id },
+      addOrgFilter(req, { _id: req.params.id }),
       req.body,
       { new: true, runValidators: true }
     );
@@ -81,11 +87,11 @@ router.put('/:id', protect, async (req, res) => {
 
 // @route   DELETE /api/customers/:id
 // @desc    Delete customer (soft delete)
-// @access  Private
-router.delete('/:id', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.delete('/:id', requirePermission('canManageCustomers'), async (req, res) => {
   try {
     const customer = await Customer.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user._id },
+      addOrgFilter(req, { _id: req.params.id }),
       { isActive: false },
       { new: true }
     );

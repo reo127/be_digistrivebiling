@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const expenseSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -117,11 +123,12 @@ const expenseSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-increment expense number
-expenseSchema.pre('save', async function(next) {
+// Auto-increment expense number (per organization)
+expenseSchema.pre('save', async function (next) {
   if (this.isNew && !this.expenseNumber) {
-    const lastExpense = await this.constructor.findOne({ userId: this.userId })
-      .sort({ createdAt: -1 });
+    const lastExpense = await this.constructor.findOne({
+      organizationId: this.organizationId
+    }).sort({ createdAt: -1 });
 
     let nextNumber = 1;
     if (lastExpense && lastExpense.expenseNumber) {
@@ -137,9 +144,9 @@ expenseSchema.pre('save', async function(next) {
   next();
 });
 
-// Index for reports
-expenseSchema.index({ userId: 1, date: -1 });
-expenseSchema.index({ userId: 1, category: 1 });
+// Indexes for multi-tenant reports
+expenseSchema.index({ organizationId: 1, date: -1 });
+expenseSchema.index({ organizationId: 1, category: 1 });
 
 const Expense = mongoose.model('Expense', expenseSchema);
 export default Expense;

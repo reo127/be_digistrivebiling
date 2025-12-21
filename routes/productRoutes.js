@@ -1,16 +1,22 @@
 import express from 'express';
 import Product from '../models/Product.js';
 import { protect } from '../middleware/auth.js';
+import tenantIsolation, { addOrgFilter } from '../middleware/tenantIsolation.js';
+import { requirePermission } from '../middleware/requireSuperAdmin.js';
 
 const router = express.Router();
+
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
 
 // @route   GET /api/products
 // @desc    Get all products
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { search, lowStock } = req.query;
-    let query = { userId: req.user._id, isActive: true };
+    let query = addOrgFilter(req, { isActive: true });
 
     if (search) {
       query.$text = { $search: search };
@@ -32,12 +38,11 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/products/:id
 // @desc    Get single product
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const product = await Product.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const product = await Product.findOne(
+      addOrgFilter(req, { _id: req.params.id })
+    );
 
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
@@ -51,11 +56,12 @@ router.get('/:id', protect, async (req, res) => {
 
 // @route   POST /api/products
 // @desc    Create product
-// @access  Private
-router.post('/', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.post('/', requirePermission('canManageProducts'), async (req, res) => {
   try {
     const product = await Product.create({
       ...req.body,
+      organizationId: req.organizationId,
       userId: req.user._id
     });
     res.status(201).json(product);
@@ -66,11 +72,11 @@ router.post('/', protect, async (req, res) => {
 
 // @route   PUT /api/products/:id
 // @desc    Update product
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.put('/:id', requirePermission('canManageProducts'), async (req, res) => {
   try {
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user._id },
+      addOrgFilter(req, { _id: req.params.id }),
       req.body,
       { new: true, runValidators: true }
     );
@@ -87,11 +93,11 @@ router.put('/:id', protect, async (req, res) => {
 
 // @route   DELETE /api/products/:id
 // @desc    Delete product (soft delete)
-// @access  Private
-router.delete('/:id', protect, async (req, res) => {
+// @access  Private (requires permission)
+router.delete('/:id', requirePermission('canManageProducts'), async (req, res) => {
   try {
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user._id },
+      addOrgFilter(req, { _id: req.params.id }),
       { isActive: false },
       { new: true }
     );

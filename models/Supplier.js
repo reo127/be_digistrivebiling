@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 
 const supplierSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -99,7 +105,9 @@ const supplierSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for search
+// Indexes for multi-tenant queries
+supplierSchema.index({ organizationId: 1, name: 1 });
+supplierSchema.index({ organizationId: 1, isActive: 1 });
 supplierSchema.index({ name: 'text', gstin: 'text', phone: 'text' });
 
 const Supplier = mongoose.model('Supplier', supplierSchema);

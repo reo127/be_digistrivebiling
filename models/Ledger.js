@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 // Double-entry accounting ledger
 const ledgerSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -120,17 +126,18 @@ const ledgerSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Indexes for efficient queries
-ledgerSchema.index({ userId: 1, date: -1 });
-ledgerSchema.index({ userId: 1, account: 1, date: -1 });
-ledgerSchema.index({ userId: 1, financialYear: 1 });
+// Indexes for efficient queries (multi-tenant)
+ledgerSchema.index({ organizationId: 1, date: -1 });
+ledgerSchema.index({ organizationId: 1, account: 1, date: -1 });
+ledgerSchema.index({ organizationId: 1, financialYear: 1 });
 ledgerSchema.index({ referenceType: 1, referenceId: 1 });
 
-// Static method to create double entry
-ledgerSchema.statics.createDoubleEntry = async function(userId, entries, options = {}) {
+// Static method to create double entry (multi-tenant)
+ledgerSchema.statics.createDoubleEntry = async function (organizationId, userId, entries, options = {}) {
   const { referenceType, referenceId, referenceModel, referenceNumber, description, date, financialYear } = options;
 
   const ledgerEntries = entries.map(entry => ({
+    organizationId,
     userId,
     date: date || new Date(),
     account: entry.account,

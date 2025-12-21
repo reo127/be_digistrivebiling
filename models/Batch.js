@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 // Separate Batch model for FIFO inventory tracking
 const batchSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -70,17 +76,18 @@ const batchSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Compound index for efficient FIFO queries
+// Compound index for efficient FIFO queries (multi-tenant)
+batchSchema.index({ organizationId: 1, product: 1, expiryDate: 1, createdAt: 1 });
+batchSchema.index({ organizationId: 1, isActive: 1 });
 batchSchema.index({ product: 1, expiryDate: 1, createdAt: 1 });
-batchSchema.index({ userId: 1, isActive: 1 });
 
 // Virtual for expiry status
-batchSchema.virtual('isExpired').get(function() {
+batchSchema.virtual('isExpired').get(function () {
   return this.expiryDate < new Date();
 });
 
 // Virtual for near expiry (within 3 months)
-batchSchema.virtual('isNearExpiry').get(function() {
+batchSchema.virtual('isNearExpiry').get(function () {
   const threeMonthsFromNow = new Date();
   threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3);
   return this.expiryDate <= threeMonthsFromNow && this.expiryDate >= new Date();
