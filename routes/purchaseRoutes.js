@@ -158,6 +158,7 @@ router.post('/', protect, async (req, res) => {
           ...itemWithGST
         },
         req.user._id,
+        req.user.organizationId,
         supplierId,
         null // Purchase ID will be updated later
       );
@@ -191,6 +192,7 @@ router.post('/', protect, async (req, res) => {
     // Create purchase
     const purchase = await Purchase.create({
       userId: req.user._id,
+      organizationId: req.user.organizationId,
       supplier: supplier._id,
       supplierName: supplier.name,
       supplierGstin: supplier.gstin,
@@ -227,7 +229,7 @@ router.post('/', protect, async (req, res) => {
     await supplier.save();
 
     // Post to ledger (double entry accounting)
-    const ledgerEntries = await postPurchaseToLedger(purchase, req.user._id);
+    const ledgerEntries = await postPurchaseToLedger(purchase, req.user._id, req.user.organizationId);
     purchase.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await purchase.save();
 

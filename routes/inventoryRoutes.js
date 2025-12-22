@@ -16,7 +16,7 @@ const router = express.Router();
 // @access  Private
 router.get('/batches/product/:productId', protect, async (req, res) => {
   try {
-    const batches = await getAvailableBatches(req.params.productId, req.user._id);
+    const batches = await getAvailableBatches(req.params.productId, req.user._id, req.user.organizationId);
     res.json(batches);
   } catch (error) {
     res.status(500).json({ message: error.message });

@@ -229,7 +229,7 @@ router.post('/', protect, async (req, res) => {
 
       } else {
         // Automatic FIFO selection
-        const batchesForSale = await getBatchesForSale(product._id, req.user._id, item.quantity);
+        const batchesForSale = await getBatchesForSale(product._id, req.user._id, req.user.organizationId, item.quantity);
 
         for (const batchSale of batchesForSale) {
           // Calculate GST for this portion
@@ -278,6 +278,7 @@ router.post('/', protect, async (req, res) => {
     // Create invoice
     const invoice = await Invoice.create({
       userId: req.user._id,
+      organizationId: req.user.organizationId,
       ...customerData,
       items: processedItems,
       ...totals,
@@ -311,7 +312,7 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Post to ledger (double-entry accounting)
-    const ledgerEntries = await postSalesToLedger(invoice, req.user._id);
+    const ledgerEntries = await postSalesToLedger(invoice, req.user._id, req.user.organizationId);
     invoice.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await invoice.save();
 

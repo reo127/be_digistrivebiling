@@ -7,9 +7,10 @@ import Product from '../models/Product.js';
  * @param {String} userId
  * @returns {Array} - Array of batches sorted by FIFO (expiry date, then creation date)
  */
-export const getAvailableBatches = async (productId, userId) => {
+export const getAvailableBatches = async (productId, userId, organizationId) => {
   return await Batch.find({
     userId,
+    organizationId,
     product: productId,
     quantity: { $gt: 0 },
     isActive: true,
@@ -21,11 +22,12 @@ export const getAvailableBatches = async (productId, userId) => {
  * Get batches for sale with FIFO logic
  * @param {String} productId
  * @param {String} userId
+ * @param {String} organizationId
  * @param {Number} requestedQuantity
  * @returns {Array} - Array of { batch, quantity } objects
  */
-export const getBatchesForSale = async (productId, userId, requestedQuantity) => {
-  const availableBatches = await getAvailableBatches(productId, userId);
+export const getBatchesForSale = async (productId, userId, organizationId, requestedQuantity) => {
+  const availableBatches = await getAvailableBatches(productId, userId, organizationId);
 
   if (availableBatches.length === 0) {
     throw new Error('No stock available');
@@ -85,7 +87,7 @@ export const deductBatchStock = async (batchId, quantity) => {
   await batch.save();
 
   // Update product total quantity
-  await updateProductTotalStock(batch.product, batch.userId);
+  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId);
 
   return batch;
 };
@@ -112,7 +114,7 @@ export const addBatchStock = async (batchId, quantity) => {
   await batch.save();
 
   // Update product total quantity
-  await updateProductTotalStock(batch.product, batch.userId);
+  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId);
 
   return batch;
 };
@@ -126,7 +128,7 @@ export const createBatch = async (batchData) => {
   const batch = await Batch.create(batchData);
 
   // Update product total quantity
-  await updateProductTotalStock(batch.product, batch.userId);
+  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId);
 
   return batch;
 };
@@ -134,10 +136,11 @@ export const createBatch = async (batchData) => {
 /**
  * Update product's total stock quantity from all batches
  * @param {String} productId
- * @param {String} userId
+ * @param {String} organizationId
  */
-export const updateProductTotalStock = async (productId, userId) => {
+export const updateProductTotalStock = async (productId, userId, organizationId) => {
   const batches = await Batch.find({
+    organizationId,
     userId,
     product: productId,
     isActive: true
@@ -172,8 +175,8 @@ export const getNearExpiryBatches = async (userId, months = 3) => {
       $lte: futureDate
     }
   })
-  .populate('product', 'name genericName')
-  .sort({ expiryDate: 1 });
+    .populate('product', 'name genericName')
+    .sort({ expiryDate: 1 });
 };
 
 /**
@@ -187,8 +190,8 @@ export const getExpiredBatches = async (userId) => {
     expiryDate: { $lt: new Date() },
     quantity: { $gt: 0 }
   })
-  .populate('product', 'name genericName')
-  .sort({ expiryDate: -1 });
+    .populate('product', 'name genericName')
+    .sort({ expiryDate: -1 });
 };
 
 /**
@@ -251,13 +254,15 @@ export const getBatchDetails = async (batchId) => {
  * Find or create batch for purchase
  * @param {Object} purchaseItem - Item from purchase
  * @param {String} userId
+ * @param {String} organizationId
  * @param {String} supplierId
  * @param {String} purchaseId
  * @returns {Object} - Batch object
  */
-export const findOrCreateBatchForPurchase = async (purchaseItem, userId, supplierId, purchaseId) => {
+export const findOrCreateBatchForPurchase = async (purchaseItem, userId, organizationId, supplierId, purchaseId) => {
   // Check if exact batch already exists
   let batch = await Batch.findOne({
+    organizationId,
     userId,
     product: purchaseItem.product,
     batchNo: purchaseItem.batchNo,
@@ -271,6 +276,7 @@ export const findOrCreateBatchForPurchase = async (purchaseItem, userId, supplie
   } else {
     // Create new batch
     batch = await createBatch({
+      organizationId,
       userId,
       product: purchaseItem.product,
       batchNo: purchaseItem.batchNo,

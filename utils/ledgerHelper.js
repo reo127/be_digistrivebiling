@@ -7,7 +7,7 @@ import { getFinancialYear } from './gstCalculations.js';
  * @param {String} userId
  * @returns {Array} - Created ledger entries
  */
-export const postPurchaseToLedger = async (purchase, userId) => {
+export const postPurchaseToLedger = async (purchase, userId, organizationId) => {
   const entries = [];
   const fy = getFinancialYear(purchase.purchaseDate);
 
@@ -85,7 +85,7 @@ export const postPurchaseToLedger = async (purchase, userId) => {
     });
   }
 
-  return await Ledger.createDoubleEntry(userId, entries, {
+  return await Ledger.createDoubleEntry(organizationId, userId, entries, {
     referenceType: 'PURCHASE',
     referenceId: purchase._id,
     referenceModel: 'Purchase',
@@ -100,9 +100,10 @@ export const postPurchaseToLedger = async (purchase, userId) => {
  * Post sales/invoice entry to ledger (Double Entry)
  * @param {Object} invoice - Invoice document
  * @param {String} userId
+ * @param {String} organizationId
  * @returns {Array} - Created ledger entries
  */
-export const postSalesToLedger = async (invoice, userId) => {
+export const postSalesToLedger = async (invoice, userId, organizationId) => {
   const entries = [];
   const fy = getFinancialYear(invoice.invoiceDate);
 
@@ -201,7 +202,7 @@ export const postSalesToLedger = async (invoice, userId) => {
     });
   }
 
-  return await Ledger.createDoubleEntry(userId, entries, {
+  return await Ledger.createDoubleEntry(organizationId, userId, entries, {
     referenceType: 'INVOICE',
     referenceId: invoice._id,
     referenceModel: 'Invoice',

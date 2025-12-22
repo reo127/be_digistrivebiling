@@ -34,7 +34,7 @@ export const calculateGST = (taxableAmount, gstRate, taxType) => {
  * @returns {String} - 'CGST_SGST' or 'IGST'
  */
 export const determineTaxType = (shopState, partyState) => {
-  if (!partyState || shopState.trim().toUpperCase() === partyState.trim().toUpperCase()) {
+  if (!shopState || !partyState || shopState.trim().toUpperCase() === partyState.trim().toUpperCase()) {
     return 'CGST_SGST';
   }
   return 'IGST';
