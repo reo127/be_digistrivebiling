@@ -178,6 +178,7 @@ router.post('/', protect, async (req, res) => {
     const payment = await Payment.create({
       ...paymentData,
       userId: req.user._id,
+      organizationId: req.organizationId || req.user.organizationId,
       type,
       partyType,
       party: partyId,
@@ -223,7 +224,7 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Post to ledger
-    const ledgerEntries = await postPaymentToLedger(payment, req.user._id);
+    const ledgerEntries = await postPaymentToLedger(payment, req.user._id, req.organizationId || req.user.organizationId);
     payment.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await payment.save();
 

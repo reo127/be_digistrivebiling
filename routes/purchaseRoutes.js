@@ -4,19 +4,24 @@ import Supplier from '../models/Supplier.js';
 import Product from '../models/Product.js';
 import ShopSettings from '../models/ShopSettings.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { calculateItemGST, calculateTotals, determineTaxType } from '../utils/gstCalculations.js';
 import { findOrCreateBatchForPurchase } from '../utils/inventoryManager.js';
 import { postPurchaseToLedger } from '../utils/ledgerHelper.js';
 
 const router = express.Router();
 
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
+
 // @route   GET /api/purchases
 // @desc    Get all purchases
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { startDate, endDate, supplier, paymentStatus } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req);
 
     if (startDate && endDate) {
       query.purchaseDate = {
@@ -41,16 +46,18 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/purchases/stats
 // @desc    Get purchase statistics
 // @access  Private
-router.get('/stats', protect, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const orgFilter = addOrgFilter(req);
 
     const [todayPurchases, totalPending, purchaseCount] = await Promise.all([
       Purchase.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            ...orgFilter,
             purchaseDate: { $gte: today }
           }
         },
@@ -64,7 +71,7 @@ router.get('/stats', protect, async (req, res) => {
       Purchase.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            ...orgFilter,
             paymentStatus: { $in: ['UNPAID', 'PARTIAL'] }
           }
         },
@@ -75,7 +82,7 @@ router.get('/stats', protect, async (req, res) => {
           }
         }
       ]),
-      Purchase.countDocuments({ userId: req.user._id })
+      Purchase.countDocuments(orgFilter)
     ]);
 
     res.json({
@@ -91,12 +98,9 @@ router.get('/stats', protect, async (req, res) => {
 // @route   GET /api/purchases/:id
 // @desc    Get single purchase
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const purchase = await Purchase.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    })
+    const purchase = await Purchase.findOne(addOrgFilter(req, { _id: req.params.id }))
       .populate('supplier')
       .populate('items.product')
       .populate('items.batch');
@@ -114,32 +118,26 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/purchases
 // @desc    Create purchase entry
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { supplier: supplierId, items, ...purchaseData } = req.body;
 
     // Validate supplier
-    const supplier = await Supplier.findOne({
-      _id: supplierId,
-      userId: req.user._id
-    });
+    const supplier = await Supplier.findOne(addOrgFilter(req, { _id: supplierId }));
 
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found' });
     }
 
     // Get shop settings for tax type determination
-    const shopSettings = await ShopSettings.findOne({ userId: req.user._id });
+    const shopSettings = await ShopSettings.findOne(addOrgFilter(req));
     const taxType = determineTaxType(shopSettings?.state, supplier.state);
 
     // Process each item
     const processedItems = [];
     for (const item of items) {
       // Validate product exists
-      const product = await Product.findOne({
-        _id: item.product,
-        userId: req.user._id
-      });
+      const product = await Product.findOne(addOrgFilter(req, { _id: item.product }));
 
       if (!product) {
         throw new Error(`Product not found: ${item.product}`);
@@ -158,7 +156,7 @@ router.post('/', protect, async (req, res) => {
           ...itemWithGST
         },
         req.user._id,
-        req.user.organizationId,
+        req.organizationId || req.user.organizationId,
         supplierId,
         null // Purchase ID will be updated later
       );
@@ -192,7 +190,7 @@ router.post('/', protect, async (req, res) => {
     // Create purchase
     const purchase = await Purchase.create({
       userId: req.user._id,
-      organizationId: req.user.organizationId,
+      organizationId: req.organizationId || req.user.organizationId,
       supplier: supplier._id,
       supplierName: supplier.name,
       supplierGstin: supplier.gstin,
@@ -229,7 +227,7 @@ router.post('/', protect, async (req, res) => {
     await supplier.save();
 
     // Post to ledger (double entry accounting)
-    const ledgerEntries = await postPurchaseToLedger(purchase, req.user._id, req.user.organizationId);
+    const ledgerEntries = await postPurchaseToLedger(purchase, req.user._id, req.organizationId || req.user.organizationId);
     purchase.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await purchase.save();
 

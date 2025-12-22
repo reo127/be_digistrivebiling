@@ -3,24 +3,17 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const deleteDuplicatePurchase = async () => {
+const cleanupDuplicatePurchase = async () => {
     try {
         await mongoose.connect(process.env.MONGODB_URI);
         console.log('Connected to MongoDB');
 
-        // Delete the duplicate purchase
+        // Delete the duplicate purchase PUR-202512-0002
         const result = await mongoose.connection.db.collection('purchases').deleteOne({
-            purchaseNumber: 'PUR-202512-0001'
+            purchaseNumber: 'PUR-202512-0002'
         });
 
-        console.log(`Deleted ${result.deletedCount} purchase(s)`);
-
-        // Also delete any associated batches if needed
-        const batchResult = await mongoose.connection.db.collection('batches').deleteMany({
-            purchaseInvoice: { $exists: false }
-        });
-
-        console.log(`Deleted ${batchResult.deletedCount} orphaned batch(es)`);
+        console.log(`Deleted ${result.deletedCount} purchase(s) with number PUR-202512-0002`);
 
         console.log('\n✅ Cleanup complete! You can now create purchases.');
 
@@ -32,4 +25,4 @@ const deleteDuplicatePurchase = async () => {
     }
 };
 
-deleteDuplicatePurchase();
+cleanupDuplicatePurchase();

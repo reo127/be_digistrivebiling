@@ -145,6 +145,7 @@ router.post('/', protect, async (req, res) => {
     const expense = await Expense.create({
       ...expenseData,
       userId: req.user._id,
+      organizationId: req.organizationId || req.user.organizationId,
       amount,
       isGSTApplicable: isGSTApplicable || false,
       gstRate: gstRate || 0,
@@ -156,7 +157,7 @@ router.post('/', protect, async (req, res) => {
     });
 
     // Post to ledger
-    const ledgerEntries = await postExpenseToLedger(expense, req.user._id);
+    const ledgerEntries = await postExpenseToLedger(expense, req.user._id, req.organizationId || req.user.organizationId);
     expense.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await expense.save();
 

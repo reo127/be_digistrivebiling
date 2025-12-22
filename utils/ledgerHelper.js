@@ -217,9 +217,10 @@ export const postSalesToLedger = async (invoice, userId, organizationId) => {
  * Post expense entry to ledger
  * @param {Object} expense - Expense document
  * @param {String} userId
+ * @param {String} organizationId
  * @returns {Array} - Created ledger entries
  */
-export const postExpenseToLedger = async (expense, userId) => {
+export const postExpenseToLedger = async (expense, userId, organizationId) => {
   const entries = [];
   const fy = getFinancialYear(expense.date);
 
@@ -299,7 +300,7 @@ export const postExpenseToLedger = async (expense, userId) => {
     description: `Payment for ${expense.description} via ${expense.paymentMethod}`
   });
 
-  return await Ledger.createDoubleEntry(userId, entries, {
+  return await Ledger.createDoubleEntry(organizationId, userId, entries, {
     referenceType: 'EXPENSE',
     referenceId: expense._id,
     referenceModel: 'Expense',
@@ -314,9 +315,10 @@ export const postExpenseToLedger = async (expense, userId) => {
  * Post payment entry to ledger
  * @param {Object} payment - Payment document
  * @param {String} userId
+ * @param {String} organizationId
  * @returns {Array} - Created ledger entries
  */
-export const postPaymentToLedger = async (payment, userId) => {
+export const postPaymentToLedger = async (payment, userId, organizationId) => {
   const entries = [];
   const fy = getFinancialYear(payment.date);
 
@@ -370,7 +372,7 @@ export const postPaymentToLedger = async (payment, userId) => {
     });
   }
 
-  return await Ledger.createDoubleEntry(userId, entries, {
+  return await Ledger.createDoubleEntry(organizationId, userId, entries, {
     referenceType: 'PAYMENT',
     referenceId: payment._id,
     referenceModel: 'Payment',
@@ -385,9 +387,10 @@ export const postPaymentToLedger = async (payment, userId) => {
  * Post purchase return to ledger
  * @param {Object} purchaseReturn - PurchaseReturn document
  * @param {String} userId
+ * @param {String} organizationId
  * @returns {Array} - Created ledger entries
  */
-export const postPurchaseReturnToLedger = async (purchaseReturn, userId) => {
+export const postPurchaseReturnToLedger = async (purchaseReturn, userId, organizationId) => {
   const entries = [];
   const fy = getFinancialYear(purchaseReturn.returnDate);
 
@@ -451,7 +454,7 @@ export const postPurchaseReturnToLedger = async (purchaseReturn, userId) => {
     description: `Debit note - ${purchaseReturn.debitNoteNumber}`
   });
 
-  return await Ledger.createDoubleEntry(userId, entries, {
+  return await Ledger.createDoubleEntry(organizationId, userId, entries, {
     referenceType: 'PURCHASE_RETURN',
     referenceId: purchaseReturn._id,
     referenceModel: 'PurchaseReturn',
@@ -468,7 +471,7 @@ export const postPurchaseReturnToLedger = async (purchaseReturn, userId) => {
  * @param {String} userId
  * @returns {Array} - Created ledger entries
  */
-export const postSalesReturnToLedger = async (salesReturn, userId) => {
+export const postSalesReturnToLedger = async (salesReturn, userId, organizationId) => {
   const entries = [];
   const fy = getFinancialYear(salesReturn.returnDate);
 
@@ -546,7 +549,7 @@ export const postSalesReturnToLedger = async (salesReturn, userId) => {
     });
   }
 
-  return await Ledger.createDoubleEntry(userId, entries, {
+  return await Ledger.createDoubleEntry(organizationId, userId, entries, {
     referenceType: 'SALES_RETURN',
     referenceId: salesReturn._id,
     referenceModel: 'SalesReturn',

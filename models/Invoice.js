@@ -65,8 +65,8 @@ const invoiceSchema = new mongoose.Schema({
     required: true
   },
   invoiceNumber: {
-    type: String,
-    unique: true
+    type: String
+    // Unique constraint is on compound index (organizationId + invoiceNumber)
   },
   customer: {
     type: mongoose.Schema.Types.ObjectId,
@@ -185,28 +185,28 @@ const invoiceSchema = new mongoose.Schema({
 
 // Indexes for multi-tenant performance
 invoiceSchema.index({ organizationId: 1, invoiceDate: -1 });
-invoiceSchema.index({ organizationId: 1, invoiceNumber: 1 });
+invoiceSchema.index({ organizationId: 1, invoiceNumber: 1 }, { unique: true }); // UNIQUE per organization
 invoiceSchema.index({ organizationId: 1, customer: 1 });
 invoiceSchema.index({ organizationId: 1, paymentStatus: 1 });
 
-// Auto-increment invoice number (per organization)
+// Auto-increment invoice number using atomic counter (per organization)
 invoiceSchema.pre('save', async function (next) {
-  if (this.isNew) {
-    // Find last invoice for this organization
-    const lastInvoice = await this.constructor.findOne({
-      organizationId: this.organizationId
-    }).sort({ createdAt: -1 });
-
-    let nextNumber = 1;
-    if (lastInvoice && lastInvoice.invoiceNumber) {
-      const lastNumber = parseInt(lastInvoice.invoiceNumber.split('-').pop());
-      nextNumber = lastNumber + 1;
-    }
+  if (this.isNew && !this.invoiceNumber) {
+    const Counter = mongoose.model('Counter');
 
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
-    this.invoiceNumber = `INV-${year}${month}-${String(nextNumber).padStart(4, '0')}`;
+    const yearMonth = `${year}${month}`;
+
+    // Get next sequence number atomically - NO RACE CONDITION!
+    const sequence = await Counter.getNextSequence(
+      this.organizationId,
+      'invoice',
+      yearMonth
+    );
+
+    this.invoiceNumber = `INV-${yearMonth}-${String(sequence).padStart(4, '0')}`;
   }
   next();
 });

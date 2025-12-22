@@ -5,19 +5,24 @@ import Customer from '../models/Customer.js';
 import ShopSettings from '../models/ShopSettings.js';
 import Batch from '../models/Batch.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { calculateItemGST, calculateTotals, determineTaxType } from '../utils/gstCalculations.js';
 import { getBatchesForSale, deductBatchStock, calculateCOGS } from '../utils/inventoryManager.js';
 import { postSalesToLedger } from '../utils/ledgerHelper.js';
 
 const router = express.Router();
 
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
+
 // @route   GET /api/invoices
 // @desc    Get all invoices
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { startDate, endDate, paymentStatus, customer } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req); // Use organizationId filter
 
     if (startDate && endDate) {
       query.invoiceDate = {
@@ -47,16 +52,18 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/invoices/stats
 // @desc    Get invoice statistics
 // @access  Private
-router.get('/stats', protect, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const orgFilter = addOrgFilter(req); // Use organizationId filter
 
     const [todaySales, totalOutstanding, invoiceCount] = await Promise.all([
       Invoice.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            ...orgFilter,
             invoiceDate: { $gte: today }
           }
         },
@@ -70,7 +77,7 @@ router.get('/stats', protect, async (req, res) => {
       Invoice.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            ...orgFilter,
             paymentStatus: { $in: ['UNPAID', 'PARTIAL'] }
           }
         },
@@ -81,7 +88,7 @@ router.get('/stats', protect, async (req, res) => {
           }
         }
       ]),
-      Invoice.countDocuments({ userId: req.user._id })
+      Invoice.countDocuments(orgFilter)
     ]);
 
     res.json({
@@ -97,12 +104,13 @@ router.get('/stats', protect, async (req, res) => {
 // @route   GET /api/invoices/:id
 // @desc    Get single invoice
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    }).populate('customer').populate('items.product').populate('items.batch');
+    const query = addOrgFilter(req, { _id: req.params.id });
+    const invoice = await Invoice.findOne(query)
+      .populate('customer')
+      .populate('items.product')
+      .populate('items.batch');
 
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });
@@ -117,12 +125,12 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/invoices
 // @desc    Create invoice with FIFO batch selection
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { items, customer: customerId, ...invoiceData } = req.body;
 
     // Get shop settings for tax type determination
-    const shopSettings = await ShopSettings.findOne({ userId: req.user._id });
+    const shopSettings = await ShopSettings.findOne(addOrgFilter(req));
 
     // Determine tax type based on customer state
     let taxType = invoiceData.taxType || 'CGST_SGST';
@@ -138,10 +146,7 @@ router.post('/', protect, async (req, res) => {
     // Get customer details if provided
     let customer = null;
     if (customerId) {
-      customer = await Customer.findOne({
-        _id: customerId,
-        userId: req.user._id
-      });
+      customer = await Customer.findOne(addOrgFilter(req, { _id: customerId }));
 
       if (customer) {
         customerData = {
@@ -166,10 +171,7 @@ router.post('/', protect, async (req, res) => {
 
     for (const item of items) {
       // Validate product
-      const product = await Product.findOne({
-        _id: item.product,
-        userId: req.user._id
-      });
+      const product = await Product.findOne(addOrgFilter(req, { _id: item.product }));
 
       if (!product) {
         throw new Error(`Product not found: ${item.product}`);
@@ -186,12 +188,11 @@ router.post('/', protect, async (req, res) => {
 
       if (item.batch) {
         // Manual batch selection
-        const batch = await Batch.findOne({
+        const batch = await Batch.findOne(addOrgFilter(req, {
           _id: item.batch,
-          userId: req.user._id,
           product: product._id,
           isActive: true
-        });
+        }));
 
         if (!batch) {
           throw new Error(`Batch not found or inactive for ${product.name}`);
@@ -278,7 +279,7 @@ router.post('/', protect, async (req, res) => {
     // Create invoice
     const invoice = await Invoice.create({
       userId: req.user._id,
-      organizationId: req.user.organizationId,
+      organizationId: req.organizationId || req.user.organizationId,
       ...customerData,
       items: processedItems,
       ...totals,
@@ -312,7 +313,7 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Post to ledger (double-entry accounting)
-    const ledgerEntries = await postSalesToLedger(invoice, req.user._id, req.user.organizationId);
+    const ledgerEntries = await postSalesToLedger(invoice, req.user._id, req.organizationId || req.user.organizationId);
     invoice.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await invoice.save();
 
@@ -326,14 +327,11 @@ router.post('/', protect, async (req, res) => {
 // @route   PUT /api/invoices/:id/payment
 // @desc    Update payment status
 // @access  Private
-router.put('/:id/payment', protect, async (req, res) => {
+router.put('/:id/payment', async (req, res) => {
   try {
     const { paymentStatus, paymentMethod, paidAmount, paymentDetails } = req.body;
 
-    const invoice = await Invoice.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const invoice = await Invoice.findOne(addOrgFilter(req, { _id: req.params.id }));
 
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });

@@ -14,7 +14,8 @@ export const tenantIsolation = (req, res, next) => {
 
     // For regular users (owner/staff), enforce their organization
     if (req.user && req.user.organizationId) {
-        req.organizationId = req.user.organizationId;
+        // Extract _id from populated organizationId object
+        req.organizationId = req.user.organizationId._id || req.user.organizationId;
         return next();
     }
 

@@ -13,8 +13,7 @@ const expenseSchema = new mongoose.Schema({
     required: true
   },
   expenseNumber: {
-    type: String,
-    unique: true
+    type: String
   },
   date: {
     type: Date,
@@ -147,6 +146,7 @@ expenseSchema.pre('save', async function (next) {
 // Indexes for multi-tenant reports
 expenseSchema.index({ organizationId: 1, date: -1 });
 expenseSchema.index({ organizationId: 1, category: 1 });
+expenseSchema.index({ organizationId: 1, expenseNumber: 1 }, { unique: true });
 
 const Expense = mongoose.model('Expense', expenseSchema);
 export default Expense;

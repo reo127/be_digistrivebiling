@@ -18,6 +18,9 @@ import paymentRoutes from './routes/paymentRoutes.js';
 import inventoryRoutes from './routes/inventoryRoutes.js';
 import reportsRoutes from './routes/reportsRoutes.js';
 
+// Import Counter model to register it with Mongoose
+import './models/Counter.js';
+
 dotenv.config();
 
 const app = express();

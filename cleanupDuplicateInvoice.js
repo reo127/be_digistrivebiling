@@ -8,12 +8,12 @@ const cleanupDuplicateInvoice = async () => {
         await mongoose.connect(process.env.MONGODB_URI);
         console.log('Connected to MongoDB');
 
-        // Delete the duplicate invoice
+        // Delete the duplicate invoice INV-202512-0002
         const result = await mongoose.connection.db.collection('invoices').deleteOne({
-            invoiceNumber: 'INV-202512-0001'
+            invoiceNumber: 'INV-202512-0002'
         });
 
-        console.log(`Deleted ${result.deletedCount} invoice(s)`);
+        console.log(`Deleted ${result.deletedCount} invoice(s) with number INV-202512-0002`);
 
         console.log('\n✅ Cleanup complete! You can now create invoices.');
 

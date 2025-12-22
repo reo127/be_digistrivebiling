@@ -1,0 +1,64 @@
+import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const fixExpenseIndexes = async () => {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log('MongoDB Connected');
+
+    const db = mongoose.connection.db;
+    const collection = db.collection('expenses');
+
+    // Get existing indexes
+    console.log('\n📋 Current Expense Indexes:');
+    const indexes = await collection.indexes();
+    indexes.forEach(index => {
+      console.log(`  - ${index.name}:`, JSON.stringify(index.key), index.unique ? '(UNIQUE)' : '');
+    });
+
+    // Drop existing non-unique compound index
+    try {
+      console.log('\n🗑️  Dropping non-unique index: organizationId_1_expenseNumber_1');
+      await collection.dropIndex('organizationId_1_expenseNumber_1');
+      console.log('✅ Successfully dropped organizationId_1_expenseNumber_1');
+    } catch (error) {
+      if (error.code === 27) {
+        console.log('ℹ️  Index does not exist');
+      } else {
+        console.log('❌ Error dropping index:', error.message);
+      }
+    }
+
+    // Create new compound UNIQUE index
+    try {
+      console.log('\n✨ Creating new compound UNIQUE index');
+      await collection.createIndex(
+        { organizationId: 1, expenseNumber: 1 },
+        { unique: true }
+      );
+      console.log('✅ Successfully created compound unique index');
+    } catch (error) {
+      console.log('❌ Error creating index:', error.message);
+    }
+
+    // Verify new indexes
+    console.log('\n📋 Updated Expense Indexes:');
+    const updatedIndexes = await collection.indexes();
+    updatedIndexes.forEach(index => {
+      console.log(`  - ${index.name}:`, JSON.stringify(index.key), index.unique ? '(UNIQUE)' : '');
+    });
+
+    console.log('\n✅ Expense index fix complete!');
+
+  } catch (error) {
+    console.error('❌ Error:', error);
+  } finally {
+    await mongoose.connection.close();
+    console.log('\nMongoDB connection closed');
+    process.exit(0);
+  }
+};
+
+fixExpenseIndexes();

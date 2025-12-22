@@ -3,19 +3,24 @@ import SalesReturn from '../models/SalesReturn.js';
 import Invoice from '../models/Invoice.js';
 import Customer from '../models/Customer.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { calculateItemGST, calculateTotals } from '../utils/gstCalculations.js';
 import { addBatchStock, canRestockBatch } from '../utils/inventoryManager.js';
 import { postSalesReturnToLedger } from '../utils/ledgerHelper.js';
 
 const router = express.Router();
 
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
+
 // @route   GET /api/sales-returns
 // @desc    Get all sales returns
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { startDate, endDate, customer } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req);
 
     if (startDate && endDate) {
       query.returnDate = {
@@ -40,12 +45,9 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/sales-returns/:id
 // @desc    Get single sales return
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const salesReturn = await SalesReturn.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    })
+    const salesReturn = await SalesReturn.findOne(addOrgFilter(req, { _id: req.params.id }))
       .populate('customer')
       .populate('originalInvoice')
       .populate('items.product')
@@ -64,15 +66,13 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/sales-returns
 // @desc    Create sales return (Credit Note)
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { originalInvoice: invoiceId, items, reason, reasonDescription, refundMethod } = req.body;
 
     // Validate original invoice
-    const invoice = await Invoice.findOne({
-      _id: invoiceId,
-      userId: req.user._id
-    }).populate('customer');
+    const invoice = await Invoice.findOne(addOrgFilter(req, { _id: invoiceId }))
+      .populate('customer');
 
     if (!invoice) {
       return res.status(404).json({ message: 'Original invoice not found' });
@@ -94,7 +94,7 @@ router.post('/', protect, async (req, res) => {
         // Old invoice - match by product (and ensure not already fully returned)
         originalItem = invoice.items.find(
           ii => ii.product.toString() === item.product.toString() &&
-                (ii.returnedQuantity || 0) < ii.quantity
+            (ii.returnedQuantity || 0) < ii.quantity
         );
       }
 
@@ -150,6 +150,7 @@ router.post('/', protect, async (req, res) => {
     // Create sales return
     const salesReturn = await SalesReturn.create({
       userId: req.user._id,
+      organizationId: req.organizationId || req.user.organizationId,
       customer: invoice.customer?._id,
       customerName: invoice.customerName,
       customerPhone: invoice.customerPhone,
@@ -187,7 +188,7 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Post to ledger
-    const ledgerEntries = await postSalesReturnToLedger(salesReturn, req.user._id);
+    const ledgerEntries = await postSalesReturnToLedger(salesReturn, req.user._id, req.organizationId || req.user.organizationId);
     salesReturn.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await salesReturn.save();
 
@@ -201,14 +202,11 @@ router.post('/', protect, async (req, res) => {
 // @route   PUT /api/sales-returns/:id/refund
 // @desc    Update refund status
 // @access  Private
-router.put('/:id/refund', protect, async (req, res) => {
+router.put('/:id/refund', async (req, res) => {
   try {
     const { refundMethod, refundedAmount } = req.body;
 
-    const salesReturn = await SalesReturn.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    const salesReturn = await SalesReturn.findOne(addOrgFilter(req, { _id: req.params.id }));
 
     if (!salesReturn) {
       return res.status(404).json({ message: 'Sales return not found' });

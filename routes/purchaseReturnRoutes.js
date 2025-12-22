@@ -3,19 +3,24 @@ import PurchaseReturn from '../models/PurchaseReturn.js';
 import Purchase from '../models/Purchase.js';
 import Supplier from '../models/Supplier.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { calculateItemGST, calculateTotals } from '../utils/gstCalculations.js';
 import { deductBatchStock } from '../utils/inventoryManager.js';
 import { postPurchaseReturnToLedger } from '../utils/ledgerHelper.js';
 
 const router = express.Router();
 
+// Apply authentication and tenant isolation to all routes
+router.use(protect);
+router.use(tenantIsolation);
+
 // @route   GET /api/purchase-returns
 // @desc    Get all purchase returns
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { startDate, endDate, supplier } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req);
 
     if (startDate && endDate) {
       query.returnDate = {
@@ -40,12 +45,9 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/purchase-returns/:id
 // @desc    Get single purchase return
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const purchaseReturn = await PurchaseReturn.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    })
+    const purchaseReturn = await PurchaseReturn.findOne(addOrgFilter(req, { _id: req.params.id }))
       .populate('supplier')
       .populate('originalPurchase')
       .populate('items.product')
@@ -64,15 +66,13 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/purchase-returns
 // @desc    Create purchase return (Debit Note)
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { originalPurchase: purchaseId, items, reason, reasonDescription } = req.body;
 
     // Validate original purchase
-    const purchase = await Purchase.findOne({
-      _id: purchaseId,
-      userId: req.user._id
-    }).populate('supplier');
+    const purchase = await Purchase.findOne(addOrgFilter(req, { _id: purchaseId }))
+      .populate('supplier');
 
     if (!purchase) {
       return res.status(404).json({ message: 'Original purchase not found' });
@@ -137,6 +137,7 @@ router.post('/', protect, async (req, res) => {
     // Create purchase return
     const purchaseReturn = await PurchaseReturn.create({
       userId: req.user._id,
+      organizationId: req.organizationId || req.user.organizationId,
       supplier: purchase.supplier._id,
       supplierName: purchase.supplierName,
       supplierGstin: purchase.supplierGstin,
@@ -163,7 +164,7 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Post to ledger
-    const ledgerEntries = await postPurchaseReturnToLedger(purchaseReturn, req.user._id);
+    const ledgerEntries = await postPurchaseReturnToLedger(purchaseReturn, req.user._id, req.organizationId || req.user.organizationId);
     purchaseReturn.ledgerEntries = ledgerEntries.map(entry => entry._id);
     await purchaseReturn.save();
 
