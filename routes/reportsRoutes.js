@@ -2,13 +2,18 @@ import express from 'express';
 import Invoice from '../models/Invoice.js';
 import Purchase from '../models/Purchase.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
+
+router.use(protect);
+router.use(tenantIsolation);
 
 // @route   GET /api/reports/gstr1
 // @desc    Get GSTR-1 report data (Outward Supplies)
 // @access  Private
-router.get('/gstr1', protect, async (req, res) => {
+router.get('/gstr1', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -17,7 +22,7 @@ router.get('/gstr1', protect, async (req, res) => {
     }
 
     const query = {
-      userId: req.user._id,
+      organizationId: req.organizationId,
       invoiceDate: {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
@@ -110,7 +115,7 @@ router.get('/gstr1', protect, async (req, res) => {
 // @route   GET /api/reports/gstr3b
 // @desc    Get GSTR-3B report data (Summary Return)
 // @access  Private
-router.get('/gstr3b', protect, async (req, res) => {
+router.get('/gstr3b', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -119,7 +124,7 @@ router.get('/gstr3b', protect, async (req, res) => {
     }
 
     const query = {
-      userId: req.user._id,
+      organizationId: req.organizationId,
       invoiceDate: {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
@@ -127,7 +132,7 @@ router.get('/gstr3b', protect, async (req, res) => {
     };
 
     const purchaseQuery = {
-      userId: req.user._id,
+      organizationId: req.organizationId,
       purchaseDate: {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
@@ -189,7 +194,7 @@ router.get('/gstr3b', protect, async (req, res) => {
 // @route   GET /api/reports/tax-summary
 // @desc    Get Tax Summary report
 // @access  Private
-router.get('/tax-summary', protect, async (req, res) => {
+router.get('/tax-summary', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -198,7 +203,7 @@ router.get('/tax-summary', protect, async (req, res) => {
     }
 
     const invoiceQuery = {
-      userId: req.user._id,
+      organizationId: req.organizationId,
       invoiceDate: {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
@@ -206,7 +211,7 @@ router.get('/tax-summary', protect, async (req, res) => {
     };
 
     const purchaseQuery = {
-      userId: req.user._id,
+      organizationId: req.organizationId,
       purchaseDate: {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
@@ -289,7 +294,7 @@ router.get('/tax-summary', protect, async (req, res) => {
 // @route   GET /api/reports/hsn-summary
 // @desc    Get HSN Summary report
 // @access  Private
-router.get('/hsn-summary', protect, async (req, res) => {
+router.get('/hsn-summary', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -298,7 +303,7 @@ router.get('/hsn-summary', protect, async (req, res) => {
     }
 
     const query = {
-      userId: req.user._id,
+      organizationId: req.organizationId,
       invoiceDate: {
         $gte: new Date(startDate),
         $lte: new Date(endDate)

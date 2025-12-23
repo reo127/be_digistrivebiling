@@ -5,17 +5,23 @@ import Supplier from '../models/Supplier.js';
 import Invoice from '../models/Invoice.js';
 import Purchase from '../models/Purchase.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { postPaymentToLedger } from '../utils/ledgerHelper.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
+
+// Apply middleware
+router.use(protect);
+router.use(tenantIsolation);
 
 // @route   GET /api/payments
 // @desc    Get all payments
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { startDate, endDate, type, partyType } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req);
 
     if (startDate && endDate) {
       query.date = {
@@ -40,16 +46,18 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/payments/stats
 // @desc    Get payment statistics
 // @access  Private
-router.get('/stats', protect, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const orgId = new mongoose.Types.ObjectId(req.organizationId);
 
     const [todayReceived, todayPaid, totalReceived, totalPaid] = await Promise.all([
       Payment.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: orgId,
             type: 'RECEIVED',
             date: { $gte: today }
           }
@@ -64,7 +72,7 @@ router.get('/stats', protect, async (req, res) => {
       Payment.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: orgId,
             type: 'PAID',
             date: { $gte: today }
           }
@@ -79,7 +87,7 @@ router.get('/stats', protect, async (req, res) => {
       Payment.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: orgId,
             type: 'RECEIVED'
           }
         },
@@ -93,7 +101,7 @@ router.get('/stats', protect, async (req, res) => {
       Payment.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: orgId,
             type: 'PAID'
           }
         },
@@ -120,11 +128,11 @@ router.get('/stats', protect, async (req, res) => {
 // @route   GET /api/payments/:id
 // @desc    Get single payment
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const payment = await Payment.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     }).populate('party');
 
     if (!payment) {
@@ -140,7 +148,7 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/payments
 // @desc    Create payment (received or paid)
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const {
       type,
@@ -157,7 +165,7 @@ router.post('/', protect, async (req, res) => {
     const PartyModel = partyType === 'CUSTOMER' ? Customer : Supplier;
     const party = await PartyModel.findOne({
       _id: partyId,
-      userId: req.user._id
+      organizationId: req.organizationId
     });
 
     if (!party) {
@@ -238,11 +246,11 @@ router.post('/', protect, async (req, res) => {
 // @route   DELETE /api/payments/:id
 // @desc    Delete payment
 // @access  Private
-router.delete('/:id', protect, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const payment = await Payment.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     });
 
     if (!payment) {

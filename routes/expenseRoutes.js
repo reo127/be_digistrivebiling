@@ -1,18 +1,24 @@
 import express from 'express';
 import Expense from '../models/Expense.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { calculateGST } from '../utils/gstCalculations.js';
 import { postExpenseToLedger } from '../utils/ledgerHelper.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
+
+// Apply middleware
+router.use(protect);
+router.use(tenantIsolation);
 
 // @route   GET /api/expenses
 // @desc    Get all expenses
 // @access  Private
-router.get('/', protect, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { startDate, endDate, category } = req.query;
-    let query = { userId: req.user._id };
+    let query = addOrgFilter(req);
 
     if (startDate && endDate) {
       query.date = {
@@ -34,7 +40,7 @@ router.get('/', protect, async (req, res) => {
 // @route   GET /api/expenses/stats
 // @desc    Get expense statistics
 // @access  Private
-router.get('/stats', protect, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -43,11 +49,13 @@ router.get('/stats', protect, async (req, res) => {
     thisMonth.setDate(1);
     thisMonth.setHours(0, 0, 0, 0);
 
+    const orgId = new mongoose.Types.ObjectId(req.organizationId);
+
     const [todayExpenses, monthExpenses, categoryWise] = await Promise.all([
       Expense.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: orgId,
             date: { $gte: today }
           }
         },
@@ -61,7 +69,7 @@ router.get('/stats', protect, async (req, res) => {
       Expense.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: orgId,
             date: { $gte: thisMonth }
           }
         },
@@ -74,7 +82,7 @@ router.get('/stats', protect, async (req, res) => {
       ]),
       Expense.aggregate([
         {
-          $match: { userId: req.user._id }
+          $match: { organizationId: orgId }
         },
         {
           $group: {
@@ -102,11 +110,11 @@ router.get('/stats', protect, async (req, res) => {
 // @route   GET /api/expenses/:id
 // @desc    Get single expense
 // @access  Private
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const expense = await Expense.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     });
 
     if (!expense) {
@@ -122,7 +130,7 @@ router.get('/:id', protect, async (req, res) => {
 // @route   POST /api/expenses
 // @desc    Create expense
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { amount, isGSTApplicable, gstRate, ...expenseData } = req.body;
 
@@ -170,11 +178,11 @@ router.post('/', protect, async (req, res) => {
 // @route   PUT /api/expenses/:id
 // @desc    Update expense
 // @access  Private
-router.put('/:id', protect, async (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const expense = await Expense.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     });
 
     if (!expense) {
@@ -221,11 +229,11 @@ router.put('/:id', protect, async (req, res) => {
 // @route   DELETE /api/expenses/:id
 // @desc    Delete expense
 // @access  Private
-router.delete('/:id', protect, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const expense = await Expense.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     });
 
     if (!expense) {

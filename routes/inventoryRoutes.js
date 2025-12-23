@@ -2,6 +2,7 @@ import express from 'express';
 import Batch from '../models/Batch.js';
 import Product from '../models/Product.js';
 import { protect } from '../middleware/auth.js';
+import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import {
   getAvailableBatches,
   getNearExpiryBatches,
@@ -11,12 +12,15 @@ import {
 
 const router = express.Router();
 
+router.use(protect);
+router.use(tenantIsolation);
+
 // @route   GET /api/inventory/batches/product/:productId
 // @desc    Get available batches for a product (FIFO sorted)
 // @access  Private
-router.get('/batches/product/:productId', protect, async (req, res) => {
+router.get('/batches/product/:productId', async (req, res) => {
   try {
-    const batches = await getAvailableBatches(req.params.productId, req.user._id, req.user.organizationId);
+    const batches = await getAvailableBatches(req.params.productId, req.user._id, req.organizationId);
     res.json(batches);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -26,11 +30,11 @@ router.get('/batches/product/:productId', protect, async (req, res) => {
 // @route   GET /api/inventory/batches/:id
 // @desc    Get single batch details
 // @access  Private
-router.get('/batches/:id', protect, async (req, res) => {
+router.get('/batches/:id', async (req, res) => {
   try {
     const batch = await Batch.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     }).populate('product', 'name genericName manufacturer')
       .populate('supplier', 'name')
       .populate('purchaseInvoice', 'purchaseNumber');
@@ -48,10 +52,10 @@ router.get('/batches/:id', protect, async (req, res) => {
 // @route   GET /api/inventory/alerts/near-expiry
 // @desc    Get batches near expiry (within 3 months by default)
 // @access  Private
-router.get('/alerts/near-expiry', protect, async (req, res) => {
+router.get('/alerts/near-expiry', async (req, res) => {
   try {
     const months = parseInt(req.query.months) || 3;
-    const batches = await getNearExpiryBatches(req.user._id, months);
+    const batches = await getNearExpiryBatches(req.organizationId, months);
     res.json(batches);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -61,9 +65,9 @@ router.get('/alerts/near-expiry', protect, async (req, res) => {
 // @route   GET /api/inventory/alerts/expired
 // @desc    Get expired batches
 // @access  Private
-router.get('/alerts/expired', protect, async (req, res) => {
+router.get('/alerts/expired', async (req, res) => {
   try {
-    const batches = await getExpiredBatches(req.user._id);
+    const batches = await getExpiredBatches(req.organizationId);
     res.json(batches);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -73,9 +77,9 @@ router.get('/alerts/expired', protect, async (req, res) => {
 // @route   GET /api/inventory/alerts/low-stock
 // @desc    Get products with low stock
 // @access  Private
-router.get('/alerts/low-stock', protect, async (req, res) => {
+router.get('/alerts/low-stock', async (req, res) => {
   try {
-    const products = await getLowStockProducts(req.user._id);
+    const products = await getLowStockProducts(req.organizationId);
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -85,18 +89,18 @@ router.get('/alerts/low-stock', protect, async (req, res) => {
 // @route   GET /api/inventory/stats
 // @desc    Get inventory statistics
 // @access  Private
-router.get('/stats', protect, async (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     const [totalProducts, totalBatches, nearExpiry, expired, lowStock, inventoryValue] = await Promise.all([
-      Product.countDocuments({ userId: req.user._id, isActive: true }),
-      Batch.countDocuments({ userId: req.user._id, isActive: true, quantity: { $gt: 0 } }),
-      getNearExpiryBatches(req.user._id, 3),
-      getExpiredBatches(req.user._id),
-      getLowStockProducts(req.user._id),
+      Product.countDocuments({ organizationId: req.organizationId, isActive: true }),
+      Batch.countDocuments({ organizationId: req.organizationId, isActive: true, quantity: { $gt: 0 } }),
+      getNearExpiryBatches(req.organizationId, 3),
+      getExpiredBatches(req.organizationId),
+      getLowStockProducts(req.organizationId),
       Batch.aggregate([
         {
           $match: {
-            userId: req.user._id,
+            organizationId: req.organizationId,
             isActive: true,
             quantity: { $gt: 0 }
           }
@@ -130,10 +134,10 @@ router.get('/stats', protect, async (req, res) => {
 // @route   GET /api/inventory/valuation
 // @desc    Get inventory valuation report
 // @access  Private
-router.get('/valuation', protect, async (req, res) => {
+router.get('/valuation', async (req, res) => {
   try {
     const batches = await Batch.find({
-      userId: req.user._id,
+      organizationId: req.organizationId,
       isActive: true,
       quantity: { $gt: 0 }
     }).populate('product', 'name genericName category');
@@ -173,11 +177,11 @@ router.get('/valuation', protect, async (req, res) => {
 // @route   PUT /api/inventory/batches/:id
 // @desc    Update batch details (price, rack, etc.)
 // @access  Private
-router.put('/batches/:id', protect, async (req, res) => {
+router.put('/batches/:id', async (req, res) => {
   try {
     const batch = await Batch.findOne({
       _id: req.params.id,
-      userId: req.user._id
+      organizationId: req.organizationId
     });
 
     if (!batch) {
