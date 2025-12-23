@@ -1,11 +1,16 @@
 import mongoose from 'mongoose';
 
 const shopSettingsSchema = new mongoose.Schema({
+  organizationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organization',
+    required: true,
+    index: true
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    unique: true
+    required: true
   },
   shopName: {
     type: String,
@@ -64,6 +69,9 @@ const shopSettingsSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// One shop settings per organization
+shopSettingsSchema.index({ organizationId: 1 }, { unique: true });
 
 const ShopSettings = mongoose.model('ShopSettings', shopSettingsSchema);
 export default ShopSettings;

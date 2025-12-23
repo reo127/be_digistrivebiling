@@ -45,13 +45,14 @@ router.post('/', async (req, res) => {
       // Update existing
       settings = await ShopSettings.findOneAndUpdate(
         { organizationId: req.organizationId },
-        { ...req.body, organizationId: req.organizationId },
+        { ...req.body, userId: req.user._id, organizationId: req.organizationId },
         { new: true, runValidators: true }
       );
     } else {
       // Create new
       settings = await ShopSettings.create({
         ...req.body,
+        userId: req.user._id,
         organizationId: req.organizationId
       });
     }
