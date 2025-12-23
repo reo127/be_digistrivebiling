@@ -87,17 +87,38 @@ router.get('/gstr1', async (req, res) => {
         taxableValue: inv.subtotal,
         cgst: inv.totalCGST || 0,
         sgst: inv.totalSGST || 0,
-        igst: inv.totalIGST || 0
+        igst: inv.totalIGST || 0,
+        gstRate: inv.items[0]?.gstRate || 0,  // Add GST rate from first item
+        cessRate: 0,
+        cessAmount: 0
       })),
       b2cLarge: b2cLargeInvoices.map(inv => ({
         invoiceNumber: inv.invoiceNumber,
         invoiceDate: inv.invoiceDate,
+        customerName: inv.customerName,
         placeOfSupply: inv.customerState,
         invoiceValue: inv.grandTotal,
         taxableValue: inv.subtotal,
         cgst: inv.totalCGST || 0,
         sgst: inv.totalSGST || 0,
-        igst: inv.totalIGST || 0
+        igst: inv.totalIGST || 0,
+        gstRate: inv.items[0]?.gstRate || 0,
+        cessRate: 0,
+        cessAmount: 0
+      })),
+      b2cSmall: b2cSmallInvoices.map(inv => ({
+        invoiceNumber: inv.invoiceNumber,
+        invoiceDate: inv.invoiceDate,
+        customerName: inv.customerName,
+        placeOfSupply: inv.customerState,
+        invoiceValue: inv.grandTotal,
+        taxableValue: inv.subtotal,
+        cgst: inv.totalCGST || 0,
+        sgst: inv.totalSGST || 0,
+        igst: inv.totalIGST || 0,
+        gstRate: inv.items[0]?.gstRate || 0,
+        cessRate: 0,
+        cessAmount: 0
       })),
       b2cSmallSummary: {
         count: b2cSmallInvoices.length,
