@@ -10,6 +10,51 @@ const router = express.Router();
 router.use(protect);
 router.use(tenantIsolation);
 
+// Helper function to ensure item has all calculated fields
+const ensureItemCalculations = (item, invoice) => {
+  // Convert to plain object if it's a Mongoose document
+  const calculatedItem = item.toObject ? { ...item.toObject() } : { ...item };
+
+  // If taxableAmount is missing or 0, calculate it
+  if (!calculatedItem.taxableAmount || calculatedItem.taxableAmount === 0) {
+    const baseAmount = calculatedItem.quantity * calculatedItem.sellingPrice;
+    calculatedItem.taxableAmount = baseAmount - (calculatedItem.discountAmount || 0);
+  }
+
+  // If tax amounts are missing, calculate them
+  if ((!calculatedItem.cgst && !calculatedItem.sgst && !calculatedItem.igst) ||
+      (calculatedItem.cgst === 0 && calculatedItem.sgst === 0 && calculatedItem.igst === 0)) {
+    const taxRate = calculatedItem.gstRate || 0;
+    const taxableAmt = calculatedItem.taxableAmount;
+    const totalTaxAmount = (taxableAmt * taxRate) / 100;
+
+    // Determine if it's CGST+SGST or IGST based on invoice taxType
+    if (invoice.taxType === 'IGST') {
+      calculatedItem.igst = totalTaxAmount;
+      calculatedItem.cgst = 0;
+      calculatedItem.sgst = 0;
+    } else {
+      // CGST_SGST - split equally
+      calculatedItem.cgst = totalTaxAmount / 2;
+      calculatedItem.sgst = totalTaxAmount / 2;
+      calculatedItem.igst = 0;
+    }
+    calculatedItem.taxAmount = totalTaxAmount;
+  }
+
+  // Ensure taxAmount is calculated
+  if (!calculatedItem.taxAmount || calculatedItem.taxAmount === 0) {
+    calculatedItem.taxAmount = (calculatedItem.cgst || 0) + (calculatedItem.sgst || 0) + (calculatedItem.igst || 0);
+  }
+
+  // Ensure totalAmount is calculated
+  if (!calculatedItem.totalAmount || calculatedItem.totalAmount === 0) {
+    calculatedItem.totalAmount = calculatedItem.taxableAmount + calculatedItem.taxAmount;
+  }
+
+  return calculatedItem;
+};
+
 // @route   GET /api/reports/gstr1
 // @desc    Get GSTR-1 report data (Outward Supplies)
 // @access  Private
@@ -31,18 +76,52 @@ router.get('/gstr1', async (req, res) => {
 
     const invoices = await Invoice.find(query)
       .populate('customer', 'name gstin state')
+      .populate('items.product', 'name hsnCode')
       .sort({ invoiceDate: 1 });
+
+    console.log('📊 Total invoices found:', invoices.length);
+    if (invoices.length > 0) {
+      console.log('📋 Sample invoice structure:');
+      console.log('  - Invoice Number:', invoices[0].invoiceNumber);
+      console.log('  - Items count:', invoices[0].items?.length || 0);
+      console.log('  - Subtotal:', invoices[0].subtotal);
+      console.log('  - Total Tax:', invoices[0].totalTax);
+      console.log('  - Grand Total:', invoices[0].grandTotal);
+      if (invoices[0].items?.[0]) {
+        console.log('  - Sample item fields:', {
+          productName: invoices[0].items[0].productName,
+          quantity: invoices[0].items[0].quantity,
+          sellingPrice: invoices[0].items[0].sellingPrice,
+          gstRate: invoices[0].items[0].gstRate,
+          taxableAmount: invoices[0].items[0].taxableAmount,
+          cgst: invoices[0].items[0].cgst,
+          sgst: invoices[0].items[0].sgst,
+          igst: invoices[0].items[0].igst,
+          taxAmount: invoices[0].items[0].taxAmount,
+          totalAmount: invoices[0].items[0].totalAmount
+        });
+      }
+    }
 
     // Group by tax type and rate
     const b2bInvoices = invoices.filter(inv => inv.customer && inv.customer.gstin);
     const b2cLargeInvoices = invoices.filter(inv => (!inv.customer?.gstin || !inv.customer) && inv.grandTotal > 250000);
     const b2cSmallInvoices = invoices.filter(inv => (!inv.customer?.gstin || !inv.customer) && inv.grandTotal <= 250000);
 
+    console.log('📊 B2B:', b2bInvoices.length, 'B2C Large:', b2cLargeInvoices.length, 'B2C Small:', b2cSmallInvoices.length);
+
     // Calculate totals by GST rate
     const gstRateTotals = {};
     invoices.forEach(invoice => {
+      if (!invoice.items || invoice.items.length === 0) {
+        console.log('⚠️ Invoice has no items:', invoice.invoiceNumber);
+        return;
+      }
       invoice.items.forEach(item => {
-        const rate = item.gstRate;
+        // Ensure item has all calculated fields
+        const calculatedItem = ensureItemCalculations(item, invoice);
+
+        const rate = calculatedItem.gstRate;
         if (!gstRateTotals[rate]) {
           gstRateTotals[rate] = {
             taxableValue: 0,
@@ -52,13 +131,15 @@ router.get('/gstr1', async (req, res) => {
             totalTax: 0
           };
         }
-        gstRateTotals[rate].taxableValue += item.taxableAmount || 0;
-        gstRateTotals[rate].cgst += item.cgst || 0;
-        gstRateTotals[rate].sgst += item.sgst || 0;
-        gstRateTotals[rate].igst += item.igst || 0;
-        gstRateTotals[rate].totalTax += item.taxAmount || 0;
+        gstRateTotals[rate].taxableValue += calculatedItem.taxableAmount || 0;
+        gstRateTotals[rate].cgst += calculatedItem.cgst || 0;
+        gstRateTotals[rate].sgst += calculatedItem.sgst || 0;
+        gstRateTotals[rate].igst += calculatedItem.igst || 0;
+        gstRateTotals[rate].totalTax += calculatedItem.taxAmount || 0;
       });
     });
+
+    console.log('📋 GST Rate Totals:', gstRateTotals);
 
     // Summary
     const summary = {
@@ -74,6 +155,8 @@ router.get('/gstr1', async (req, res) => {
       b2cSmallCount: b2cSmallInvoices.length
     };
 
+    console.log('📈 Summary being sent:', summary);
+
     res.json({
       summary,
       gstRateTotals,
@@ -88,9 +171,10 @@ router.get('/gstr1', async (req, res) => {
         cgst: inv.totalCGST || 0,
         sgst: inv.totalSGST || 0,
         igst: inv.totalIGST || 0,
-        gstRate: inv.items[0]?.gstRate || 0,  // Add GST rate from first item
+        gstRate: inv.items[0]?.gstRate || 0,
         cessRate: 0,
-        cessAmount: 0
+        cessAmount: 0,
+        items: (inv.items || []).map(item => ensureItemCalculations(item, inv)) // Calculate items
       })),
       b2cLarge: b2cLargeInvoices.map(inv => ({
         invoiceNumber: inv.invoiceNumber,
@@ -104,7 +188,8 @@ router.get('/gstr1', async (req, res) => {
         igst: inv.totalIGST || 0,
         gstRate: inv.items[0]?.gstRate || 0,
         cessRate: 0,
-        cessAmount: 0
+        cessAmount: 0,
+        items: (inv.items || []).map(item => ensureItemCalculations(item, inv)) // Calculate items
       })),
       b2cSmall: b2cSmallInvoices.map(inv => ({
         invoiceNumber: inv.invoiceNumber,
@@ -118,7 +203,8 @@ router.get('/gstr1', async (req, res) => {
         igst: inv.totalIGST || 0,
         gstRate: inv.items[0]?.gstRate || 0,
         cessRate: 0,
-        cessAmount: 0
+        cessAmount: 0,
+        items: (inv.items || []).map(item => ensureItemCalculations(item, inv)) // Calculate items
       })),
       b2cSmallSummary: {
         count: b2cSmallInvoices.length,
