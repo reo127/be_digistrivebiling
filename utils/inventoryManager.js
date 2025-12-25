@@ -260,36 +260,42 @@ export const getBatchDetails = async (batchId) => {
  * @returns {Object} - Batch object
  */
 export const findOrCreateBatchForPurchase = async (purchaseItem, userId, organizationId, supplierId, purchaseId) => {
-  // Check if exact batch already exists
-  let batch = await Batch.findOne({
-    organizationId,
-    userId,
-    product: purchaseItem.product,
-    batchNo: purchaseItem.batchNo,
-    expiryDate: purchaseItem.expiryDate
-  });
+  // Build query conditionally - only match existing batch if batchNo is provided
+  let batch = null;
+
+  if (purchaseItem.batchNo) {
+    batch = await Batch.findOne({
+      organizationId,
+      userId,
+      product: purchaseItem.product,
+      batchNo: purchaseItem.batchNo,
+      expiryDate: purchaseItem.expiryDate
+    });
+  }
 
   if (batch) {
     // Add to existing batch
     batch.quantity += purchaseItem.quantity + (purchaseItem.freeQuantity || 0);
     await batch.save();
   } else {
-    // Create new batch
+    // Create new batch - auto-generate batch number if not provided
+    const batchNo = purchaseItem.batchNo || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
     batch = await createBatch({
       organizationId,
       userId,
       product: purchaseItem.product,
-      batchNo: purchaseItem.batchNo,
-      expiryDate: purchaseItem.expiryDate,
-      manufacturingDate: purchaseItem.manufacturingDate,
-      mrp: purchaseItem.mrp,
-      purchasePrice: purchaseItem.purchasePrice,
-      sellingPrice: purchaseItem.sellingPrice,
-      gstRate: purchaseItem.gstRate,
+      batchNo: batchNo,
+      expiryDate: purchaseItem.expiryDate || null,
+      manufacturingDate: purchaseItem.manufacturingDate || null,
+      mrp: purchaseItem.mrp || 0,
+      purchasePrice: purchaseItem.purchasePrice || 0,
+      sellingPrice: purchaseItem.sellingPrice || 0,
+      gstRate: purchaseItem.gstRate || 0,
       quantity: purchaseItem.quantity + (purchaseItem.freeQuantity || 0),
       purchaseInvoice: purchaseId,
       supplier: supplierId,
-      rack: purchaseItem.rack
+      rack: purchaseItem.rack || ''
     });
   }
 

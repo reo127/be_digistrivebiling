@@ -9,11 +9,11 @@ const purchaseItemSchema = new mongoose.Schema({
   productName: String,
   batchNo: {
     type: String,
-    required: true
+    required: false
   },
   expiryDate: {
     type: Date,
-    required: true
+    required: false
   },
   manufacturingDate: {
     type: Date
@@ -21,7 +21,8 @@ const purchaseItemSchema = new mongoose.Schema({
   hsnCode: String,
   quantity: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   freeQuantity: {
     type: Number,
@@ -30,19 +31,23 @@ const purchaseItemSchema = new mongoose.Schema({
   unit: String,
   mrp: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   purchasePrice: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   sellingPrice: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   gstRate: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   discount: {
     type: Number,
@@ -106,15 +111,18 @@ const purchaseSchema = new mongoose.Schema({
   taxType: {
     type: String,
     enum: ['CGST_SGST', 'IGST'],
-    required: true
+    required: false,
+    default: 'CGST_SGST'
   },
   subtotal: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   totalTax: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   totalCGST: {
     type: Number,
@@ -151,7 +159,8 @@ const purchaseSchema = new mongoose.Schema({
   },
   grandTotal: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   paymentStatus: {
     type: String,

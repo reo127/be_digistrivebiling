@@ -20,35 +20,39 @@ const batchSchema = new mongoose.Schema({
   },
   batchNo: {
     type: String,
-    required: true,
+    required: false,
     trim: true
   },
   expiryDate: {
     type: Date,
-    required: true
+    required: false
   },
   manufacturingDate: {
     type: Date
   },
   mrp: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   purchasePrice: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   sellingPrice: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   gstRate: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   quantity: {
     type: Number,
-    required: true,
+    required: false,
     default: 0
   },
   // Reference to purchase invoice
