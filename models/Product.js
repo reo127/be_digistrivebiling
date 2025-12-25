@@ -42,7 +42,7 @@ const productSchema = new mongoose.Schema({
   },
   gstRate: {
     type: Number,
-    required: true,
+    required: false,
     default: 12
   },
   mrp: {
@@ -54,7 +54,8 @@ const productSchema = new mongoose.Schema({
     required: true
   },
   purchasePrice: {
-    type: Number
+    type: Number,
+    required: true
   },
   stockQuantity: {
     type: Number,

@@ -18,7 +18,7 @@ const expenseSchema = new mongoose.Schema({
   date: {
     type: Date,
     default: Date.now,
-    required: true
+    required: false
   },
   category: {
     type: String,
@@ -41,11 +41,12 @@ const expenseSchema = new mongoose.Schema({
       'ADVERTISING',
       'MISCELLANEOUS'
     ],
-    required: true
+    required: false,
+    default: 'MISCELLANEOUS'
   },
   description: {
     type: String,
-    required: true,
+    required: false,
     trim: true
   },
   amount: {
@@ -79,12 +80,14 @@ const expenseSchema = new mongoose.Schema({
   },
   totalAmount: {
     type: Number,
-    required: true
+    required: false,
+    default: 0
   },
   paymentMethod: {
     type: String,
     enum: ['CASH', 'BANK_TRANSFER', 'CHEQUE', 'UPI', 'CARD'],
-    required: true
+    required: false,
+    default: 'CASH'
   },
   paidTo: {
     type: String,
