@@ -281,12 +281,17 @@ export const findOrCreateBatchForPurchase = async (purchaseItem, userId, organiz
     // Create new batch - auto-generate batch number if not provided
     const batchNo = purchaseItem.batchNo || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
+    // Default expiry date to 1 year from now if not provided
+    const finalExpiryDate = purchaseItem.expiryDate
+      ? new Date(purchaseItem.expiryDate)
+      : new Date(new Date().setFullYear(new Date().getFullYear() + 1));
+
     batch = await createBatch({
       organizationId,
       userId,
       product: purchaseItem.product,
       batchNo: batchNo,
-      expiryDate: purchaseItem.expiryDate || null,
+      expiryDate: finalExpiryDate,
       manufacturingDate: purchaseItem.manufacturingDate || null,
       mrp: purchaseItem.mrp || 0,
       purchasePrice: purchaseItem.purchasePrice || 0,
