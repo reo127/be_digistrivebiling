@@ -23,7 +23,6 @@ const supplierSchema = new mongoose.Schema({
   },
   phone: {
     type: String,
-    required: true,
     trim: true
   },
   email: {
@@ -34,8 +33,7 @@ const supplierSchema = new mongoose.Schema({
   gstin: {
     type: String,
     uppercase: true,
-    trim: true,
-    required: true
+    trim: true
   },
   pan: {
     type: String,
@@ -52,8 +50,7 @@ const supplierSchema = new mongoose.Schema({
   },
   state: {
     type: String,
-    trim: true,
-    required: true
+    trim: true
   },
   pincode: {
     type: String,

@@ -87,31 +87,33 @@ router.get('/:id', async (req, res) => {
 // @access  Private (requires permission)
 router.post('/', requirePermission('canManageSuppliers'), async (req, res) => {
   try {
-    const { gstin, name, phone, state } = req.body;
+    const { gstin, name } = req.body;
 
-    // Validate required fields
-    if (!name || !phone || !gstin || !state) {
+    // Validate required fields - only name is mandatory
+    if (!name || name.trim() === '') {
       return res.status(400).json({
-        message: 'Name, phone, GSTIN, and state are required'
+        message: 'Supplier name is required'
       });
     }
 
-    // Validate GSTIN format
-    if (!validateGSTIN(gstin)) {
+    // Validate GSTIN format only if provided
+    if (gstin && gstin.trim() !== '' && !validateGSTIN(gstin)) {
       return res.status(400).json({
         message: 'Invalid GSTIN format'
       });
     }
 
-    // Check if supplier with same GSTIN already exists
-    const existingSupplier = await Supplier.findOne(
-      addOrgFilter(req, { gstin: gstin.toUpperCase() })
-    );
+    // Check if supplier with same GSTIN already exists (only if GSTIN is provided)
+    if (gstin && gstin.trim() !== '') {
+      const existingSupplier = await Supplier.findOne(
+        addOrgFilter(req, { gstin: gstin.toUpperCase() })
+      );
 
-    if (existingSupplier) {
-      return res.status(400).json({
-        message: 'Supplier with this GSTIN already exists'
-      });
+      if (existingSupplier) {
+        return res.status(400).json({
+          message: 'Supplier with this GSTIN already exists'
+        });
+      }
     }
 
     const supplier = await Supplier.create({
