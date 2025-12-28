@@ -96,13 +96,6 @@ router.post('/', requirePermission('canManageSuppliers'), async (req, res) => {
       });
     }
 
-    // Validate GSTIN format only if provided
-    if (gstin && gstin.trim() !== '' && !validateGSTIN(gstin)) {
-      return res.status(400).json({
-        message: 'Invalid GSTIN format'
-      });
-    }
-
     // Check if supplier with same GSTIN already exists (only if GSTIN is provided)
     if (gstin && gstin.trim() !== '') {
       const existingSupplier = await Supplier.findOne(
@@ -142,12 +135,8 @@ router.put('/:id', requirePermission('canManageSuppliers'), async (req, res) => 
       return res.status(404).json({ message: 'Supplier not found' });
     }
 
-    // If GSTIN is being updated, validate it
-    if (req.body.gstin && req.body.gstin !== supplier.gstin) {
-      if (!validateGSTIN(req.body.gstin)) {
-        return res.status(400).json({ message: 'Invalid GSTIN format' });
-      }
-
+    // If GSTIN is being updated, check if it already exists
+    if (req.body.gstin && req.body.gstin !== supplier.gstin && req.body.gstin.trim() !== '') {
       // Check if new GSTIN already exists
       const existingSupplier = await Supplier.findOne(
         addOrgFilter(req, {
