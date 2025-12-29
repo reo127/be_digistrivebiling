@@ -166,15 +166,32 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Validate items array
+    if (!items || items.length === 0) {
+      return res.status(400).json({ message: 'Please add at least one item to the invoice' });
+    }
+
     // Process items with FIFO batch selection
     const processedItems = [];
 
-    for (const item of items) {
-      // Validate product
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      // Validate product is selected
+      if (!item.product || item.product === '') {
+        return res.status(400).json({ message: `Please select a product for item #${i + 1}` });
+      }
+
+      // Validate quantity
+      if (!item.quantity || item.quantity <= 0) {
+        return res.status(400).json({ message: `Please enter a valid quantity for item #${i + 1}` });
+      }
+
+      // Validate product exists
       const product = await Product.findOne(addOrgFilter(req, { _id: item.product }));
 
       if (!product) {
-        throw new Error(`Product not found: ${item.product}`);
+        return res.status(400).json({ message: `Product not found for item #${i + 1}. Please select a valid product.` });
       }
 
       // Check total available stock
