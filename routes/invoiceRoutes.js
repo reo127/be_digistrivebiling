@@ -225,7 +225,7 @@ router.post('/', async (req, res) => {
           sellingPrice: item.sellingPrice || batch.sellingPrice,
           discount: item.discount || 0,
           gstRate: batch.gstRate
-        }, taxType);
+        }, taxType, 'invoice');
 
         // Deduct from batch
         await deductBatchStock(batch._id, item.quantity);
@@ -256,7 +256,7 @@ router.post('/', async (req, res) => {
             sellingPrice: item.sellingPrice || batchSale.sellingPrice,
             discount: item.discount || 0,
             gstRate: batchSale.gstRate
-          }, taxType);
+          }, taxType, 'invoice');
 
           // Deduct from batch
           await deductBatchStock(batchSale.batch, batchSale.quantity);

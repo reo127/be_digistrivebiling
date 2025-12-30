@@ -164,11 +164,11 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ message: `Product not found for item #${i + 1}. Please select a valid product.` });
       }
 
-      // Calculate GST for item
+      // Calculate GST for item (pass 'purchase' context to use purchase price)
       const itemWithGST = calculateItemGST({
         ...item,
         purchasePrice: item.purchasePrice
-      }, taxType);
+      }, taxType, 'purchase');
 
       // Create or update batch
       const batch = await findOrCreateBatchForPurchase(

@@ -108,12 +108,12 @@ router.post('/', async (req, res) => {
         throw new Error(`Cannot return more than sold quantity for item`);
       }
 
-      // Calculate GST for return item
+      // Calculate GST for return item (use 'invoice' context for sales returns)
       const itemWithGST = calculateItemGST({
         ...item,
         sellingPrice: originalItem.sellingPrice,
         gstRate: originalItem.gstRate
-      }, invoice.taxType);
+      }, invoice.taxType, 'invoice');
 
       // Only restock if batch exists and can be restocked
       let canRestock = false;

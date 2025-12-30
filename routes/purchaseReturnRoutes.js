@@ -107,12 +107,12 @@ router.post('/', async (req, res) => {
         throw new Error(`Cannot return more than purchased quantity for item`);
       }
 
-      // Calculate GST for return item
+      // Calculate GST for return item (pass 'purchase' context)
       const itemWithGST = calculateItemGST({
         ...item,
         purchasePrice: originalItem.purchasePrice,
         gstRate: originalItem.gstRate
-      }, purchase.taxType);
+      }, purchase.taxType, 'purchase');
 
       // Deduct from batch inventory (removing returned stock) - only if batch exists
       if (batchId) {

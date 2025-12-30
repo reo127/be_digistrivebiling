@@ -44,11 +44,27 @@ export const determineTaxType = (shopState, partyState) => {
  * Calculate item-level GST for invoice/purchase items
  * @param {Object} item - { quantity, sellingPrice/purchasePrice, discount, gstRate }
  * @param {String} taxType - 'CGST_SGST' or 'IGST'
+ * @param {String} context - 'purchase' or 'invoice' (optional, defaults to 'invoice')
  * @returns {Object} - Complete item with tax calculations
  */
-export const calculateItemGST = (item, taxType) => {
+export const calculateItemGST = (item, taxType, context = 'invoice') => {
   const { quantity, sellingPrice, purchasePrice, discount = 0, gstRate } = item;
-  const price = sellingPrice || purchasePrice;
+
+  // For purchases, ONLY use purchasePrice
+  // For invoices (sales), ONLY use sellingPrice (throw error if missing)
+  let price;
+  if (context === 'purchase') {
+    price = purchasePrice;
+    if (!price || price <= 0) {
+      throw new Error('Purchase price is required for purchase transactions');
+    }
+  } else {
+    // For invoices, sellingPrice is MANDATORY - no fallback to purchasePrice
+    price = sellingPrice;
+    if (!price || price <= 0) {
+      throw new Error('Selling price is required for invoice transactions');
+    }
+  }
 
   // Calculate taxable amount
   const itemTotal = price * quantity;
