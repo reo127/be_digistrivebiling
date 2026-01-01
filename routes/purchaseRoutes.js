@@ -187,6 +187,8 @@ router.post('/', async (req, res) => {
         product: product._id,
         productName: product.name,
         batch: batch._id,
+        batchNo: batch.batchNo,
+        expiryDate: batch.expiryDate,
         hsnCode: product.hsnCode || item.hsnCode,
         unit: product.unit
       });
