@@ -137,20 +137,26 @@ export const createBatch = async (batchData) => {
  * Update product's total stock quantity from all batches
  * @param {String} productId
  * @param {String} organizationId
+ * @param {Object} session - MongoDB session for transaction support (optional)
  */
-export const updateProductTotalStock = async (productId, userId, organizationId) => {
-  const batches = await Batch.find({
+export const updateProductTotalStock = async (productId, userId, organizationId, session = null) => {
+  const queryOptions = {
     organizationId,
     userId,
     product: productId,
     isActive: true
-  });
+  };
+
+  const batches = session
+    ? await Batch.find(queryOptions).session(session)
+    : await Batch.find(queryOptions);
 
   const totalStock = batches.reduce((sum, batch) => sum + batch.quantity, 0);
 
+  const updateOptions = session ? { session } : {};
   await Product.findByIdAndUpdate(productId, {
     stockQuantity: totalStock
-  });
+  }, updateOptions);
 
   return totalStock;
 };

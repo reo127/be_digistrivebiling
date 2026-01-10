@@ -133,7 +133,7 @@ ledgerSchema.index({ organizationId: 1, financialYear: 1 });
 ledgerSchema.index({ referenceType: 1, referenceId: 1 });
 
 // Static method to create double entry (multi-tenant)
-ledgerSchema.statics.createDoubleEntry = async function (organizationId, userId, entries, options = {}) {
+ledgerSchema.statics.createDoubleEntry = async function (organizationId, userId, entries, options = {}, session = null) {
   const { referenceType, referenceId, referenceModel, referenceNumber, description, date, financialYear } = options;
 
   const ledgerEntries = entries.map(entry => ({
@@ -156,6 +156,10 @@ ledgerSchema.statics.createDoubleEntry = async function (organizationId, userId,
     notes: entry.notes
   }));
 
+  // Use session if provided for transaction support
+  if (session) {
+    return await this.insertMany(ledgerEntries, { session });
+  }
   return await this.insertMany(ledgerEntries);
 };
 

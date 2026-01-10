@@ -195,6 +195,18 @@ const purchaseSchema = new mongoose.Schema({
   ledgerEntries: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Ledger'
+  }],
+  // Audit trail for edits
+  editHistory: [{
+    editedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    editedAt: {
+      type: Date,
+      default: Date.now
+    },
+    changes: mongoose.Schema.Types.Mixed
   }]
 }, {
   timestamps: true

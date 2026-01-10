@@ -7,7 +7,7 @@ import { getFinancialYear } from './gstCalculations.js';
  * @param {String} userId
  * @returns {Array} - Created ledger entries
  */
-export const postPurchaseToLedger = async (purchase, userId, organizationId) => {
+export const postPurchaseToLedger = async (purchase, userId, organizationId, session = null) => {
   const entries = [];
   const fy = getFinancialYear(purchase.purchaseDate);
 
@@ -59,8 +59,9 @@ export const postPurchaseToLedger = async (purchase, userId, organizationId) => 
     });
   }
 
-  // Credit: Accounts Payable (if unpaid) or Cash/Bank (if paid)
+  // Credit: Accounts Payable (if unpaid) or Cash/Bank (if paid) or both (if partial)
   if (purchase.paymentStatus === 'PAID') {
+    // Fully paid - credit cash/bank
     const account = purchase.paymentMethod === 'CASH' ? 'CASH' : 'BANK';
     entries.push({
       account,
@@ -72,7 +73,39 @@ export const postPurchaseToLedger = async (purchase, userId, organizationId) => 
       partyName: purchase.supplierName,
       description: `Payment for ${purchase.purchaseNumber} via ${purchase.paymentMethod}`
     });
+  } else if (purchase.paymentStatus === 'PARTIAL') {
+    // Partial payment - credit both cash/bank (for paid) and accounts payable (for balance)
+    const account = purchase.paymentMethod === 'CASH' ? 'CASH' : 'BANK';
+
+    // Credit cash/bank for paid amount
+    if (purchase.paidAmount > 0) {
+      entries.push({
+        account,
+        type: 'CREDIT',
+        amount: purchase.paidAmount,
+        party: 'SUPPLIER',
+        partyId: purchase.supplier,
+        partyModel: 'Supplier',
+        partyName: purchase.supplierName,
+        description: `Partial payment for ${purchase.purchaseNumber} via ${purchase.paymentMethod}`
+      });
+    }
+
+    // Credit accounts payable for balance amount
+    if (purchase.balanceAmount > 0) {
+      entries.push({
+        account: 'ACCOUNTS_PAYABLE',
+        type: 'CREDIT',
+        amount: purchase.balanceAmount,
+        party: 'SUPPLIER',
+        partyId: purchase.supplier,
+        partyModel: 'Supplier',
+        partyName: purchase.supplierName,
+        description: `Balance due for ${purchase.purchaseNumber}`
+      });
+    }
   } else {
+    // Unpaid - credit accounts payable
     entries.push({
       account: 'ACCOUNTS_PAYABLE',
       type: 'CREDIT',
@@ -93,7 +126,7 @@ export const postPurchaseToLedger = async (purchase, userId, organizationId) => 
     description: `Purchase Entry - ${purchase.purchaseNumber}`,
     date: purchase.purchaseDate,
     financialYear: fy
-  });
+  }, session);
 };
 
 /**
