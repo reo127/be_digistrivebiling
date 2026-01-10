@@ -94,9 +94,9 @@ router.get('/stats', async (req, res) => {
     const [totalProducts, totalBatches, nearExpiry, expired, lowStock, inventoryValue] = await Promise.all([
       Product.countDocuments({ organizationId: req.organizationId, isActive: true }),
       Batch.countDocuments({ organizationId: req.organizationId, isActive: true, quantity: { $gt: 0 } }),
-      getNearExpiryBatches(req.organizationId, 3),
-      getExpiredBatches(req.organizationId),
-      getLowStockProducts(req.organizationId),
+      getNearExpiryBatches(req.user._id, 3),
+      getExpiredBatches(req.user._id),
+      getLowStockProducts(req.user._id),
       Batch.aggregate([
         {
           $match: {
@@ -124,7 +124,7 @@ router.get('/stats', async (req, res) => {
       nearExpiryCount: nearExpiry.length,
       expiredCount: expired.length,
       lowStockCount: lowStock.length,
-      inventoryValue: inventoryValue[0]?.value || 0
+      totalValue: inventoryValue[0]?.value || 0
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

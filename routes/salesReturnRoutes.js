@@ -14,6 +14,74 @@ const router = express.Router();
 router.use(protect);
 router.use(tenantIsolation);
 
+// @route   GET /api/sales-returns/stats
+// @desc    Get sales return statistics
+// @access  Private
+router.get('/stats', async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Calculate first day of current month
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    firstDayOfMonth.setHours(0, 0, 0, 0);
+
+    const orgFilter = addOrgFilter(req);
+
+    const [totalReturns, totalAmount, totalRefunded, thisMonth] = await Promise.all([
+      SalesReturn.countDocuments(orgFilter),
+      SalesReturn.aggregate([
+        {
+          $match: orgFilter
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ]),
+      SalesReturn.aggregate([
+        {
+          $match: {
+            ...orgFilter,
+            refundStatus: 'COMPLETED'
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$refundedAmount' }
+          }
+        }
+      ]),
+      SalesReturn.aggregate([
+        {
+          $match: {
+            ...orgFilter,
+            returnDate: { $gte: firstDayOfMonth }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ])
+    ]);
+
+    res.json({
+      totalReturns,
+      totalAmount: totalAmount[0]?.total || 0,
+      totalRefunded: totalRefunded[0]?.total || 0,
+      thisMonth: thisMonth[0]?.total || 0
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @route   GET /api/sales-returns
 // @desc    Get all sales returns
 // @access  Private

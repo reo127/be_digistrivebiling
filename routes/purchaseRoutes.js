@@ -51,9 +51,13 @@ router.get('/stats', async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // Calculate first day of current month
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    firstDayOfMonth.setHours(0, 0, 0, 0);
+
     const orgFilter = addOrgFilter(req);
 
-    const [todayPurchases, totalPending, purchaseCount] = await Promise.all([
+    const [todayPurchases, totalPending, purchaseCount, thisMonth, totalAmount] = await Promise.all([
       Purchase.aggregate([
         {
           $match: {
@@ -82,13 +86,41 @@ router.get('/stats', async (req, res) => {
           }
         }
       ]),
-      Purchase.countDocuments(orgFilter)
+      Purchase.countDocuments(orgFilter),
+      Purchase.aggregate([
+        {
+          $match: {
+            ...orgFilter,
+            purchaseDate: { $gte: firstDayOfMonth }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ]),
+      Purchase.aggregate([
+        {
+          $match: orgFilter
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ])
     ]);
 
     res.json({
       todayPurchases: todayPurchases[0]?.total || 0,
       totalPending: totalPending[0]?.total || 0,
-      totalPurchases: purchaseCount
+      totalPurchases: purchaseCount,
+      thisMonth: thisMonth[0]?.total || 0,
+      totalAmount: totalAmount[0]?.total || 0,
+      pendingPayment: totalPending[0]?.total || 0
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

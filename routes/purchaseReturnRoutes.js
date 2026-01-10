@@ -14,6 +14,59 @@ const router = express.Router();
 router.use(protect);
 router.use(tenantIsolation);
 
+// @route   GET /api/purchase-returns/stats
+// @desc    Get purchase return statistics
+// @access  Private
+router.get('/stats', async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Calculate first day of current month
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    firstDayOfMonth.setHours(0, 0, 0, 0);
+
+    const orgFilter = addOrgFilter(req);
+
+    const [totalReturns, totalAmount, thisMonth] = await Promise.all([
+      PurchaseReturn.countDocuments(orgFilter),
+      PurchaseReturn.aggregate([
+        {
+          $match: orgFilter
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ]),
+      PurchaseReturn.aggregate([
+        {
+          $match: {
+            ...orgFilter,
+            returnDate: { $gte: firstDayOfMonth }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ])
+    ]);
+
+    res.json({
+      totalReturns,
+      totalAmount: totalAmount[0]?.total || 0,
+      thisMonth: thisMonth[0]?.total || 0
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @route   GET /api/purchase-returns
 // @desc    Get all purchase returns
 // @access  Private

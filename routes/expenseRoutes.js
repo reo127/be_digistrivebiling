@@ -45,18 +45,34 @@ router.get('/stats', async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const thisMonth = new Date();
-    thisMonth.setDate(1);
-    thisMonth.setHours(0, 0, 0, 0);
+    // Calculate first day of current month
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    firstDayOfMonth.setHours(0, 0, 0, 0);
+
+    // Calculate first day of current year
+    const firstDayOfYear = new Date(today.getFullYear(), 0, 1);
+    firstDayOfYear.setHours(0, 0, 0, 0);
 
     const orgId = new mongoose.Types.ObjectId(req.organizationId);
 
-    const [todayExpenses, monthExpenses, categoryWise] = await Promise.all([
+    const [totalCount, totalAmount, thisMonth, thisYear, categoryWise] = await Promise.all([
+      Expense.countDocuments({ organizationId: orgId }),
+      Expense.aggregate([
+        {
+          $match: { organizationId: orgId }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$totalAmount' }
+          }
+        }
+      ]),
       Expense.aggregate([
         {
           $match: {
             organizationId: orgId,
-            date: { $gte: today }
+            date: { $gte: firstDayOfMonth }
           }
         },
         {
@@ -70,7 +86,7 @@ router.get('/stats', async (req, res) => {
         {
           $match: {
             organizationId: orgId,
-            date: { $gte: thisMonth }
+            date: { $gte: firstDayOfYear }
           }
         },
         {
@@ -98,8 +114,10 @@ router.get('/stats', async (req, res) => {
     ]);
 
     res.json({
-      todayExpenses: todayExpenses[0]?.total || 0,
-      monthExpenses: monthExpenses[0]?.total || 0,
+      totalCount,
+      totalAmount: totalAmount[0]?.total || 0,
+      thisMonth: thisMonth[0]?.total || 0,
+      thisYear: thisYear[0]?.total || 0,
       categoryWise
     });
   } catch (error) {

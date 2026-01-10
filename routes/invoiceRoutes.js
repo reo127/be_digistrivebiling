@@ -57,9 +57,13 @@ router.get('/stats', async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // Calculate first day of current month
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    firstDayOfMonth.setHours(0, 0, 0, 0);
+
     const orgFilter = addOrgFilter(req); // Use organizationId filter
 
-    const [todaySales, totalOutstanding, invoiceCount] = await Promise.all([
+    const [todaySales, totalOutstanding, invoiceCount, monthlyRevenue] = await Promise.all([
       Invoice.aggregate([
         {
           $match: {
@@ -88,13 +92,28 @@ router.get('/stats', async (req, res) => {
           }
         }
       ]),
-      Invoice.countDocuments(orgFilter)
+      Invoice.countDocuments(orgFilter),
+      Invoice.aggregate([
+        {
+          $match: {
+            ...orgFilter,
+            invoiceDate: { $gte: firstDayOfMonth }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$grandTotal' }
+          }
+        }
+      ])
     ]);
 
     res.json({
       todaySales: todaySales[0]?.total || 0,
       totalOutstanding: totalOutstanding[0]?.total || 0,
-      totalInvoices: invoiceCount
+      totalInvoices: invoiceCount,
+      monthlyRevenue: monthlyRevenue[0]?.total || 0
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
