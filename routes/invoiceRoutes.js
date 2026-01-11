@@ -903,4 +903,75 @@ router.put('/:id/payment', async (req, res) => {
   }
 });
 
+// @route   DELETE /api/invoices/:id
+// @desc    Delete invoice (return inventory, reverse balance, delete ledger)
+// @access  Private
+router.delete('/:id', async (req, res) => {
+  let session = null;
+
+  try {
+    // Get invoice with all populated data
+    const invoice = await Invoice.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('customer')
+      .populate('items.product')
+      .populate('items.batch');
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // Check if invoice has any returns - prevent deletion if fully/partially returned
+    const hasReturns = invoice.items.some(item => (item.returnedQuantity || 0) > 0);
+    if (hasReturns || invoice.isReturned || invoice.partiallyReturned) {
+      return res.status(400).json({
+        message: 'Cannot delete invoice with returns. Please delete the return entries first.'
+      });
+    }
+
+    // Start transaction
+    session = await Invoice.startSession();
+    session.startTransaction();
+
+    // Return inventory for all items
+    for (const item of invoice.items) {
+      if (item.batch && item.quantity > 0) {
+        await addBatchStock(item.batch._id, item.quantity, session);
+      }
+    }
+
+    // Reverse customer balance
+    if (invoice.customer && invoice.balanceAmount > 0) {
+      const customer = await Customer.findById(invoice.customer._id);
+      if (customer) {
+        customer.outstandingBalance -= invoice.balanceAmount;
+        await customer.save({ session });
+      }
+    }
+
+    // Delete ledger entries
+    if (invoice.ledgerEntries && invoice.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: invoice.ledgerEntries } }, { session });
+    }
+
+    // Delete the invoice
+    await Invoice.findByIdAndDelete(invoice._id, { session });
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({ message: 'Invoice deleted successfully' });
+
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Invoice deletion error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
 export default router;
