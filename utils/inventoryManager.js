@@ -65,8 +65,9 @@ export const getBatchesForSale = async (productId, userId, organizationId, reque
  * Deduct stock from batches (for sales)
  * @param {String} batchId
  * @param {Number} quantity
+ * @param {Object} session - MongoDB session for transaction support (optional)
  */
-export const deductBatchStock = async (batchId, quantity) => {
+export const deductBatchStock = async (batchId, quantity, session = null) => {
   const batch = await Batch.findById(batchId);
 
   if (!batch) {
@@ -84,10 +85,11 @@ export const deductBatchStock = async (batchId, quantity) => {
     batch.depletedAt = new Date();
   }
 
-  await batch.save();
+  const saveOptions = session ? { session } : {};
+  await batch.save(saveOptions);
 
   // Update product total quantity
-  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId);
+  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId, session);
 
   return batch;
 };
@@ -96,8 +98,9 @@ export const deductBatchStock = async (batchId, quantity) => {
  * Add stock to batch (for purchase or sales return)
  * @param {String} batchId
  * @param {Number} quantity
+ * @param {Object} session - MongoDB session for transaction support (optional)
  */
-export const addBatchStock = async (batchId, quantity) => {
+export const addBatchStock = async (batchId, quantity, session = null) => {
   const batch = await Batch.findById(batchId);
 
   if (!batch) {
@@ -111,10 +114,11 @@ export const addBatchStock = async (batchId, quantity) => {
     batch.depletedAt = null;
   }
 
-  await batch.save();
+  const saveOptions = session ? { session } : {};
+  await batch.save(saveOptions);
 
   // Update product total quantity
-  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId);
+  await updateProductTotalStock(batch.product, batch.userId, batch.organizationId, session);
 
   return batch;
 };

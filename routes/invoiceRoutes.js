@@ -7,8 +7,9 @@ import Batch from '../models/Batch.js';
 import { protect } from '../middleware/auth.js';
 import { tenantIsolation, addOrgFilter } from '../middleware/tenantIsolation.js';
 import { calculateItemGST, calculateTotals, determineTaxType } from '../utils/gstCalculations.js';
-import { getBatchesForSale, deductBatchStock, calculateCOGS } from '../utils/inventoryManager.js';
+import { getBatchesForSale, deductBatchStock, addBatchStock, calculateCOGS } from '../utils/inventoryManager.js';
 import { postSalesToLedger } from '../utils/ledgerHelper.js';
+import Ledger from '../models/Ledger.js';
 
 const router = express.Router();
 
@@ -359,6 +360,507 @@ router.post('/', async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
+// @route   PUT /api/invoices/:id
+// @desc    Edit invoice (items, quantities, prices, customer, payment, etc.)
+// @access  Private
+router.put('/:id', async (req, res) => {
+  let session = null;
+
+  try {
+    const { items, customer: customerId, ...invoiceData } = req.body;
+
+    // Get existing invoice with full details
+    const oldInvoice = await Invoice.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('customer')
+      .populate('items.product')
+      .populate('items.batch');
+
+    if (!oldInvoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // IMPORTANT: Allow editing even with partial returns, but track returned quantities
+    // Fully returned invoices should still be editable for corrections
+
+    // Validate items array
+    if (!items || items.length === 0) {
+      return res.status(400).json({ message: 'Invoice must have at least one item' });
+    }
+
+    // Get shop settings for tax determination
+    const shopSettings = await ShopSettings.findOne(addOrgFilter(req));
+    
+    // Handle customer changes
+    let customer = null;
+    let taxType = invoiceData.taxType || oldInvoice.taxType || 'CGST_SGST';
+    let customerData = {};
+
+    // Check if customer was explicitly provided (even if undefined/null)
+    const customerProvided = 'customer' in req.body;
+    const oldCustomerId = oldInvoice.customer?._id?.toString();
+
+    if (customerProvided && customerId && customerId !== oldCustomerId) {
+      // Customer changed to a different customer
+      customer = await Customer.findOne(addOrgFilter(req, { _id: customerId }));
+      if (!customer) {
+        return res.status(404).json({ message: 'Customer not found' });
+      }
+      customerData = {
+        customer: customer._id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        customerAddress: customer.address,
+        customerCity: customer.city,
+        customerState: customer.state,
+        customerGstin: customer.gstin
+      };
+      if (shopSettings && customer.state) {
+        taxType = determineTaxType(shopSettings.state, customer.state);
+      }
+    } else if (customerProvided && !customerId && oldCustomerId) {
+      // Changed from customer to cash customer
+      customer = null;
+      customerData = {
+        customerName: invoiceData.customerName || 'Cash Customer',
+        customerPhone: invoiceData.customerPhone || '',
+        customerAddress: invoiceData.customerAddress || '',
+        customerCity: invoiceData.customerCity || '',
+        customerState: invoiceData.customerState || '',
+        customerGstin: invoiceData.customerGstin || ''
+      };
+    } else if (oldInvoice.customer && (!customerProvided || customerId === oldCustomerId)) {
+      // Same customer - preserve or update details
+      customer = oldInvoice.customer;
+      customerData = {
+        customer: customer._id,
+        customerName: invoiceData.customerName !== undefined ? invoiceData.customerName : oldInvoice.customerName,
+        customerPhone: invoiceData.customerPhone !== undefined ? invoiceData.customerPhone : oldInvoice.customerPhone,
+        customerAddress: invoiceData.customerAddress !== undefined ? invoiceData.customerAddress : oldInvoice.customerAddress,
+        customerCity: invoiceData.customerCity !== undefined ? invoiceData.customerCity : oldInvoice.customerCity,
+        customerState: invoiceData.customerState !== undefined ? invoiceData.customerState : oldInvoice.customerState,
+        customerGstin: invoiceData.customerGstin !== undefined ? invoiceData.customerGstin : oldInvoice.customerGstin
+      };
+    } else {
+      // Walk-in customer (was cash, remains cash)
+      customer = null;
+      customerData = {
+        customerName: invoiceData.customerName !== undefined ? invoiceData.customerName : oldInvoice.customerName,
+        customerPhone: invoiceData.customerPhone !== undefined ? invoiceData.customerPhone : oldInvoice.customerPhone,
+        customerAddress: invoiceData.customerAddress !== undefined ? invoiceData.customerAddress : oldInvoice.customerAddress,
+        customerCity: invoiceData.customerCity !== undefined ? invoiceData.customerCity : oldInvoice.customerCity,
+        customerState: invoiceData.customerState !== undefined ? invoiceData.customerState : oldInvoice.customerState,
+        customerGstin: invoiceData.customerGstin !== undefined ? invoiceData.customerGstin : oldInvoice.customerGstin
+      };
+    }
+
+    // Identify inventory changes - compare old items vs new items
+    const inventoryChanges = [];
+    const newItemsMap = new Map();
+    
+    // Build map of new items by product+batch
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const key = item.batch ? `${item.product}_${item.batch}` : `${item.product}_manual_${i}`;
+      newItemsMap.set(key, { ...item, index: i });
+    }
+
+    // Check which old items were removed or quantity decreased
+    for (const oldItem of oldInvoice.items) {
+      const oldKey = oldItem.batch ? `${oldItem.product._id}_${oldItem.batch._id}` : null;
+      const newItem = oldKey && newItemsMap.get(oldKey);
+
+      if (!newItem) {
+        // Item removed - add stock back to original batch
+        const returnedQty = oldItem.returnedQuantity || 0;
+        const availableToReturn = oldItem.quantity - returnedQty;
+        
+        if (availableToReturn > 0 && oldItem.batch) {
+          inventoryChanges.push({
+            type: 'REMOVE',
+            batch: oldItem.batch._id,
+            batchNo: oldItem.batch.batchNo,
+            product: oldItem.product._id,
+            productName: oldItem.productName,
+            oldQuantity: oldItem.quantity,
+            newQuantity: 0,
+            change: availableToReturn,
+            returnedQuantity: returnedQty
+          });
+        }
+      } else {
+        // Item exists in both - check quantity change
+        const returnedQty = oldItem.returnedQuantity || 0;
+        const oldAvailableQty = oldItem.quantity - returnedQty;
+        const requestedQty = newItem.quantity;
+
+        if (requestedQty < oldAvailableQty) {
+          // Quantity decreased - return stock
+          const returnQty = oldAvailableQty - requestedQty;
+          if (oldItem.batch) {
+            inventoryChanges.push({
+              type: 'DECREASE',
+              batch: oldItem.batch._id,
+              batchNo: oldItem.batch.batchNo,
+              product: oldItem.product._id,
+              productName: oldItem.productName,
+              oldQuantity: oldItem.quantity,
+              newQuantity: requestedQty,
+              change: returnQty,
+              returnedQuantity: returnedQty
+            });
+          }
+        } else if (requestedQty > oldAvailableQty) {
+          // Quantity increased - need more stock (will handle in new items processing)
+          inventoryChanges.push({
+            type: 'INCREASE',
+            batch: oldItem.batch?._id,
+            product: oldItem.product._id,
+            productName: oldItem.productName,
+            oldQuantity: oldItem.quantity,
+            newQuantity: requestedQty,
+            change: requestedQty - oldAvailableQty,
+            needsValidation: true
+          });
+        }
+      }
+    }
+
+    // Process new/modified items - validate stock and calculate GST
+    const processedItems = [];
+    const oldItemsMap = new Map();
+    
+    // Build map of old items
+    for (const oldItem of oldInvoice.items) {
+      const key = oldItem.batch ? `${oldItem.product._id}_${oldItem.batch._id}` : null;
+      if (key) oldItemsMap.set(key, oldItem);
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      // Validate product
+      const product = await Product.findOne(addOrgFilter(req, { _id: item.product }));
+      if (!product) {
+        return res.status(400).json({ message: `Product not found for item #${i + 1}` });
+      }
+
+      // Validate quantity
+      if (!item.quantity || item.quantity <= 0) {
+        return res.status(400).json({ message: `Invalid quantity for item #${i + 1} (${product.name})` });
+      }
+
+      const itemKey = item.batch ? `${item.product}_${item.batch}` : null;
+      const oldItem = itemKey && oldItemsMap.get(itemKey);
+
+      if (!oldItem) {
+        // NEW ITEM - Use FIFO batch selection (like invoice creation)
+        if (item.batch) {
+          // Manual batch selection
+          const batch = await Batch.findOne(addOrgFilter(req, {
+            _id: item.batch,
+            product: product._id,
+            isActive: true
+          }));
+
+          if (!batch) {
+            return res.status(400).json({ message: `Batch not found for ${product.name}` });
+          }
+
+          if (batch.quantity < item.quantity) {
+            return res.status(400).json({
+              message: `Insufficient stock for ${product.name}. Available: ${batch.quantity}, Requested: ${item.quantity}`
+            });
+          }
+
+          // Calculate GST
+          const itemWithGST = calculateItemGST({
+            quantity: item.quantity,
+            sellingPrice: item.sellingPrice || batch.sellingPrice,
+            discount: item.discount || 0,
+            gstRate: batch.gstRate
+          }, taxType, 'invoice');
+
+          processedItems.push({
+            product: product._id,
+            productName: product.name,
+            batch: batch._id,
+            batchNo: batch.batchNo,
+            expiryDate: batch.expiryDate,
+            hsnCode: product.hsnCode,
+            unit: product.unit,
+            mrp: batch.mrp,
+            purchasePrice: batch.purchasePrice,
+            sellingPrice: item.sellingPrice || batch.sellingPrice,
+            returnedQuantity: 0,
+            ...itemWithGST
+          });
+
+          inventoryChanges.push({
+            type: 'ADD',
+            batch: batch._id,
+            batchNo: batch.batchNo,
+            product: product._id,
+            productName: product.name,
+            change: item.quantity
+          });
+
+        } else {
+          // Automatic FIFO batch selection
+          const batchesForSale = await getBatchesForSale(
+            product._id,
+            req.user._id,
+            req.user.organizationId,
+            item.quantity
+          );
+
+          for (const batchSale of batchesForSale) {
+            const itemWithGST = calculateItemGST({
+              quantity: batchSale.quantity,
+              sellingPrice: item.sellingPrice || batchSale.sellingPrice,
+              discount: item.discount || 0,
+              gstRate: batchSale.gstRate
+            }, taxType, 'invoice');
+
+            processedItems.push({
+              product: product._id,
+              productName: product.name,
+              batch: batchSale.batch,
+              batchNo: batchSale.batchNo,
+              expiryDate: batchSale.expiryDate,
+              hsnCode: product.hsnCode,
+              unit: product.unit,
+              mrp: batchSale.mrp,
+              purchasePrice: batchSale.purchasePrice,
+              sellingPrice: item.sellingPrice || batchSale.sellingPrice,
+              returnedQuantity: 0,
+              ...itemWithGST
+            });
+
+            inventoryChanges.push({
+              type: 'ADD',
+              batch: batchSale.batch,
+              batchNo: batchSale.batchNo,
+              product: product._id,
+              productName: product.name,
+              change: batchSale.quantity
+            });
+          }
+        }
+
+      } else {
+        // EXISTING ITEM - may have quantity/price changes
+        const batch = await Batch.findById(oldItem.batch._id);
+        if (!batch) {
+          return res.status(400).json({ message: `Batch not found for ${product.name}` });
+        }
+
+        const returnedQty = oldItem.returnedQuantity || 0;
+        const oldNetQuantity = oldItem.quantity - returnedQty;
+        const quantityIncrease = item.quantity - oldNetQuantity;
+
+        if (quantityIncrease > 0) {
+          // Need more stock
+          if (batch.quantity < quantityIncrease) {
+            return res.status(400).json({
+              message: `Insufficient stock for ${product.name}. Available: ${batch.quantity}, Need additional: ${quantityIncrease}`
+            });
+          }
+        }
+
+        // Calculate GST with new prices
+        const itemWithGST = calculateItemGST({
+          quantity: item.quantity,
+          sellingPrice: item.sellingPrice !== undefined ? item.sellingPrice : oldItem.sellingPrice,
+          discount: item.discount !== undefined ? item.discount : oldItem.discount,
+          gstRate: batch.gstRate
+        }, taxType, 'invoice');
+
+        processedItems.push({
+          product: product._id,
+          productName: product.name,
+          batch: batch._id,
+          batchNo: batch.batchNo,
+          expiryDate: batch.expiryDate,
+          hsnCode: product.hsnCode,
+          unit: product.unit,
+          mrp: batch.mrp,
+          purchasePrice: batch.purchasePrice,
+          sellingPrice: item.sellingPrice !== undefined ? item.sellingPrice : oldItem.sellingPrice,
+          returnedQuantity: returnedQty,
+          ...itemWithGST
+        });
+      }
+    }
+
+    // Preserve other charges if not provided (default to 0 if undefined in old invoice)
+    const deliveryCharges = invoiceData.deliveryCharges !== undefined ? invoiceData.deliveryCharges : (oldInvoice.deliveryCharges || 0);
+    const packagingCharges = invoiceData.packagingCharges !== undefined ? invoiceData.packagingCharges : (oldInvoice.packagingCharges || 0);
+    const otherCharges = invoiceData.otherCharges !== undefined ? invoiceData.otherCharges : (oldInvoice.otherCharges || 0);
+    const discount = invoiceData.discount !== undefined ? invoiceData.discount : (oldInvoice.discount || 0);
+
+    // Validate charges
+    if (deliveryCharges < 0 || packagingCharges < 0 || otherCharges < 0 || discount < 0) {
+      return res.status(400).json({ message: 'Charges and discount cannot be negative' });
+    }
+
+    // Calculate new totals
+    const totals = calculateTotals(
+      processedItems,
+      { deliveryCharges, packagingCharges, otherCharges },
+      discount
+    );
+
+    // Preserve paid amount, recalculate balance
+    const paidAmount = invoiceData.paidAmount !== undefined ? invoiceData.paidAmount : oldInvoice.paidAmount;
+    
+    if (paidAmount < 0) {
+      return res.status(400).json({ message: 'Paid amount cannot be negative' });
+    }
+    if (paidAmount > totals.grandTotal) {
+      return res.status(400).json({
+        message: `Paid amount (₹${paidAmount}) cannot exceed grand total (₹${totals.grandTotal})`
+      });
+    }
+
+    const balanceAmount = totals.grandTotal - paidAmount;
+    const paymentStatus = balanceAmount <= 0 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    // Recalculate COGS (Cost of Goods Sold)
+    const cogs = await calculateCOGS(processedItems);
+
+    // ========================================
+    // ALL VALIDATIONS PASSED - START TRANSACTION
+    // ========================================
+
+    session = await Invoice.startSession();
+    session.startTransaction();
+
+    // Apply inventory changes within transaction
+    for (const change of inventoryChanges) {
+      if (change.type === 'REMOVE' || change.type === 'DECREASE') {
+        // Return stock to original batch
+        await addBatchStock(change.batch, change.change, session);
+      } else if (change.type === 'ADD' || change.type === 'INCREASE') {
+        // Deduct stock from batch
+        await deductBatchStock(change.batch, change.change, session);
+      }
+    }
+
+    // Update customer balance if customer exists
+    const customerChanged = (oldInvoice.customer?._id?.toString() !== customer?._id?.toString());
+    
+    if (customerChanged) {
+      // Reverse old customer balance
+      if (oldInvoice.customer) {
+        const oldCustomer = await Customer.findById(oldInvoice.customer._id);
+        if (oldCustomer) {
+          oldCustomer.outstandingBalance -= oldInvoice.balanceAmount;
+          await oldCustomer.save({ session });
+        }
+      }
+      // Add new customer balance
+      if (customer) {
+        customer.outstandingBalance += balanceAmount;
+        await customer.save({ session });
+      }
+    } else if (customer) {
+      // Same customer - calculate net change
+      const balanceChange = balanceAmount - oldInvoice.balanceAmount;
+      customer.outstandingBalance += balanceChange;
+      await customer.save({ session });
+    }
+
+    // Delete old ledger entries
+    if (oldInvoice.ledgerEntries && oldInvoice.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: oldInvoice.ledgerEntries } }, { session });
+    }
+
+    // Save old values for audit trail BEFORE updating
+    const auditData = {
+      oldGrandTotal: oldInvoice.grandTotal,
+      oldBalanceAmount: oldInvoice.balanceAmount,
+      oldCustomer: oldInvoice.customerName,
+      inventoryChanges
+    };
+
+    // Update invoice document
+    Object.assign(oldInvoice, {
+      ...customerData,
+      invoiceDate: invoiceData.invoiceDate !== undefined ? invoiceData.invoiceDate : oldInvoice.invoiceDate,
+      dueDate: invoiceData.dueDate !== undefined ? invoiceData.dueDate : oldInvoice.dueDate,
+      deliveryCharges,
+      packagingCharges,
+      otherCharges,
+      discount,
+      paymentMethod: invoiceData.paymentMethod !== undefined ? invoiceData.paymentMethod : oldInvoice.paymentMethod,
+      paymentTerms: invoiceData.paymentTerms !== undefined ? invoiceData.paymentTerms : oldInvoice.paymentTerms,
+      notes: invoiceData.notes !== undefined ? invoiceData.notes : oldInvoice.notes,
+      items: processedItems,
+      taxType,
+      subtotal: totals.subtotal,
+      totalTax: totals.totalTax,
+      totalCGST: totals.totalCGST,
+      totalSGST: totals.totalSGST,
+      totalIGST: totals.totalIGST,
+      grandTotal: totals.grandTotal,
+      roundOff: totals.roundOff,
+      paymentStatus,
+      paidAmount,
+      balanceAmount,
+      cogs
+    });
+
+    // Create new ledger entries
+    const ledgerEntries = await postSalesToLedger(
+      oldInvoice,
+      req.user._id,
+      req.organizationId || req.user.organizationId,
+      session
+    );
+    oldInvoice.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // Add audit trail
+    if (!oldInvoice.editHistory) {
+      oldInvoice.editHistory = [];
+    }
+    oldInvoice.editHistory.push({
+      editedBy: req.user._id,
+      editedAt: new Date(),
+      changes: {
+        ...auditData,
+        newGrandTotal: totals.grandTotal,
+        newBalanceAmount: balanceAmount,
+        newCustomer: customerData.customerName
+      }
+    });
+
+    await oldInvoice.save({ session });
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      invoice: oldInvoice,
+      message: 'Invoice updated successfully',
+      warnings: inventoryChanges
+        .filter(c => (c.type === 'REMOVE' || c.type === 'DECREASE') && c.returnedQuantity > 0)
+        .map(c => `Note: ${c.productName} had ${c.returnedQuantity} units returned`)
+    });
+
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Invoice edit error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
 
 // @route   PUT /api/invoices/:id/payment
 // @desc    Update payment status

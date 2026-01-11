@@ -178,7 +178,19 @@ const invoiceSchema = new mongoose.Schema({
   cogs: {
     type: Number,
     default: 0
-  }
+  },
+  // Audit trail for edits
+  editHistory: [{
+    editedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    editedAt: {
+      type: Date,
+      default: Date.now
+    },
+    changes: mongoose.Schema.Types.Mixed
+  }]
 }, {
   timestamps: true
 });

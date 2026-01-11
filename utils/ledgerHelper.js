@@ -136,7 +136,7 @@ export const postPurchaseToLedger = async (purchase, userId, organizationId, ses
  * @param {String} organizationId
  * @returns {Array} - Created ledger entries
  */
-export const postSalesToLedger = async (invoice, userId, organizationId) => {
+export const postSalesToLedger = async (invoice, userId, organizationId, session = null) => {
   const entries = [];
   const fy = getFinancialYear(invoice.invoiceDate);
 
@@ -243,7 +243,7 @@ export const postSalesToLedger = async (invoice, userId, organizationId) => {
     description: `Sales Entry - ${invoice.invoiceNumber}`,
     date: invoice.invoiceDate,
     financialYear: fy
-  });
+  }, session);
 };
 
 /**
