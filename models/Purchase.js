@@ -169,7 +169,7 @@ const purchaseSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['CASH', 'CHEQUE', 'BANK_TRANSFER', 'CREDIT'],
+    enum: ['CASH', 'CHEQUE', 'BANK_TRANSFER', 'UPI', 'CREDIT'],
     default: 'CREDIT'
   },
   paidAmount: {
@@ -180,6 +180,38 @@ const purchaseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Multiple payment tracking
+  payments: [{
+    amount: {
+      type: Number,
+      required: true
+    },
+    paymentMethod: {
+      type: String,
+      enum: ['CASH', 'CHEQUE', 'BANK_TRANSFER', 'UPI', 'CREDIT_NOTE', 'OTHER'],
+      required: true
+    },
+    paymentDate: {
+      type: Date,
+      default: Date.now,
+      required: true
+    },
+    referenceNumber: String,
+    notes: String,
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    // Ledger entries for this payment (debit and credit)
+    ledgerEntries: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger'
+    }]
+  }],
   paymentTerms: String,
   notes: String,
   // For returns

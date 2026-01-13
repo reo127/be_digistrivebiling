@@ -284,6 +284,56 @@ router.post('/', async (req, res) => {
     // Post to ledger (double entry accounting)
     const ledgerEntries = await postPurchaseToLedger(purchase, req.user._id, req.organizationId || req.user.organizationId);
     purchase.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // If initial payment was made during purchase creation, create payment entry with ledger
+    if (paidAmount > 0) {
+      const Ledger = (await import('../models/Ledger.js')).default;
+
+      // Create ledger entries for the initial payment
+      const paymentLedgerEntries = await Ledger.createDoubleEntry(
+        req.organizationId || req.user.organizationId,
+        req.user._id,
+        [
+          {
+            account: 'ACCOUNTS_PAYABLE',
+            type: 'DEBIT',
+            amount: paidAmount,
+            party: 'SUPPLIER',
+            partyId: supplier._id,
+            partyModel: 'Supplier',
+            partyName: supplier.name,
+            description: `Initial payment for ${purchase.purchaseNumber}`
+          },
+          {
+            account: purchaseData.paymentMethod === 'CASH' ? 'CASH' : 'BANK',
+            type: 'CREDIT',
+            amount: paidAmount,
+            description: `Initial payment for ${purchase.purchaseNumber} via ${purchaseData.paymentMethod || 'CREDIT'}`
+          }
+        ],
+        {
+          referenceType: 'PAYMENT',
+          referenceId: purchase._id,
+          referenceModel: 'Purchase',
+          referenceNumber: purchase.purchaseNumber
+        }
+      );
+
+      // Create payment entry in payments array
+      const initialPayment = {
+        amount: paidAmount,
+        paymentMethod: purchaseData.paymentMethod || 'CASH',
+        paymentDate: purchaseData.purchaseDate || new Date(),
+        referenceNumber: purchaseData.billNumber || '',
+        notes: 'Initial payment during purchase creation',
+        createdBy: req.user._id,
+        createdAt: new Date(),
+        ledgerEntries: paymentLedgerEntries.map(entry => entry._id)
+      };
+
+      purchase.payments.push(initialPayment);
+    }
+
     await purchase.save();
 
     res.status(201).json(purchase);
@@ -528,20 +578,11 @@ router.put('/:id', async (req, res) => {
     );
 
     // Calculate balance amount
-    // IMPORTANT: Use old paidAmount if not provided (preserve existing payment)
-    const paidAmount = purchaseData.paidAmount !== undefined
-      ? purchaseData.paidAmount
-      : oldPurchase.paidAmount;
-
-    // Validate payment amount
-    if (paidAmount < 0) {
-      return res.status(400).json({ message: 'Paid amount cannot be negative' });
-    }
-    if (paidAmount > totals.grandTotal) {
-      return res.status(400).json({
-        message: `Paid amount (₹${paidAmount}) cannot exceed grand total (₹${totals.grandTotal})`
-      });
-    }
+    // IMPORTANT: Calculate paidAmount from payments array to maintain consistency
+    // Payments should only be managed through the /payments routes
+    const paidAmount = oldPurchase.payments && oldPurchase.payments.length > 0
+      ? oldPurchase.payments.reduce((sum, payment) => sum + payment.amount, 0)
+      : 0;
 
     const balanceAmount = totals.grandTotal - paidAmount;
     const paymentStatus = balanceAmount <= 0 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
@@ -702,7 +743,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // @route   PUT /api/purchases/:id/payment
-// @desc    Update payment status
+// @desc    Update payment status (Legacy - for backward compatibility)
 // @access  Private
 router.put('/:id/payment', protect, async (req, res) => {
   try {
@@ -740,6 +781,387 @@ router.put('/:id/payment', protect, async (req, res) => {
     res.json(purchase);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   POST /api/purchases/:id/payments
+// @desc    Add a new payment to purchase
+// @access  Private
+router.post('/:id/payments', async (req, res) => {
+  let session = null;
+
+  try {
+    const { amount, paymentMethod, paymentDate, referenceNumber, notes } = req.body;
+
+    // Validate input
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: 'Payment amount must be greater than 0' });
+    }
+
+    if (!paymentMethod) {
+      return res.status(400).json({ message: 'Payment method is required' });
+    }
+
+    // Get purchase with tenant isolation
+    const purchase = await Purchase.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('supplier');
+
+    if (!purchase) {
+      return res.status(404).json({ message: 'Purchase not found' });
+    }
+
+    // Validate payment amount doesn't exceed balance
+    if (amount > purchase.balanceAmount) {
+      return res.status(400).json({
+        message: `Payment amount (₹${amount}) cannot exceed balance amount (₹${purchase.balanceAmount})`
+      });
+    }
+
+    // Start transaction
+    session = await Purchase.startSession();
+    session.startTransaction();
+
+    // Create payment entry
+    const payment = {
+      amount,
+      paymentMethod,
+      paymentDate: paymentDate || new Date(),
+      referenceNumber,
+      notes,
+      createdBy: req.user._id,
+      createdAt: new Date()
+    };
+
+    // Create ledger entry for this payment
+    const Ledger = (await import('../models/Ledger.js')).default;
+    const ledgerEntries = await Ledger.createDoubleEntry(
+      req.organizationId || req.user.organizationId,
+      req.user._id,
+      [
+        {
+          account: 'ACCOUNTS_PAYABLE',
+          type: 'DEBIT',
+          amount: amount,
+          party: 'SUPPLIER',
+          partyId: purchase.supplier._id,
+          partyModel: 'Supplier',
+          partyName: purchase.supplier.name || purchase.supplierName,
+          description: `Payment for ${purchase.purchaseNumber}`
+        },
+        {
+          account: paymentMethod === 'CASH' ? 'CASH' : 'BANK',
+          type: 'CREDIT',
+          amount: amount,
+          description: `Payment for ${purchase.purchaseNumber} via ${paymentMethod}`
+        }
+      ],
+      {
+        referenceType: 'PAYMENT',
+        referenceId: purchase._id,
+        referenceModel: 'Purchase',
+        referenceNumber: purchase.purchaseNumber
+      },
+      session
+    );
+
+    // Store both ledger entry IDs (debit and credit)
+    payment.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // Initialize payments array if it doesn't exist (for old purchases)
+    if (!purchase.payments) {
+      purchase.payments = [];
+    }
+
+    // Initialize paidAmount and balanceAmount if they don't exist (for old purchases)
+    if (purchase.paidAmount === undefined || purchase.paidAmount === null) {
+      purchase.paidAmount = 0;
+    }
+    if (purchase.balanceAmount === undefined || purchase.balanceAmount === null) {
+      purchase.balanceAmount = purchase.grandTotal;
+    }
+
+    // Add payment to purchase
+    purchase.payments.push(payment);
+
+    // Update purchase totals
+    const oldPaidAmount = purchase.paidAmount;
+    const oldBalanceAmount = purchase.balanceAmount;
+
+    purchase.paidAmount = oldPaidAmount + amount;
+    purchase.balanceAmount = oldBalanceAmount - amount;
+    purchase.paymentStatus = purchase.balanceAmount <= 0 ? 'PAID' : 'PARTIAL';
+
+    await purchase.save({ session });
+
+    // Update supplier balance (fetch within session to avoid race conditions)
+    const supplier = await Supplier.findById(purchase.supplier._id).session(session);
+    if (supplier) {
+      supplier.currentBalance -= amount; // Reduce supplier balance
+      await supplier.save({ session });
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.status(201).json({
+      success: true,
+      payment: purchase.payments[purchase.payments.length - 1],
+      purchase: {
+        paidAmount: purchase.paidAmount,
+        balanceAmount: purchase.balanceAmount,
+        paymentStatus: purchase.paymentStatus
+      },
+      message: 'Payment added successfully'
+    });
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Add payment error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// @route   PUT /api/purchases/:id/payments/:paymentId
+// @desc    Edit a payment
+// @access  Private
+router.put('/:id/payments/:paymentId', async (req, res) => {
+  let session = null;
+
+  try {
+    const { amount, paymentMethod, paymentDate, referenceNumber, notes } = req.body;
+
+    // Validate input
+    if (amount !== undefined && amount <= 0) {
+      return res.status(400).json({ message: 'Payment amount must be greater than 0' });
+    }
+
+    // Get purchase with tenant isolation
+    const purchase = await Purchase.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('supplier');
+
+    if (!purchase) {
+      return res.status(404).json({ message: 'Purchase not found' });
+    }
+
+    // Initialize payments array if it doesn't exist (for old purchases)
+    if (!purchase.payments) {
+      purchase.payments = [];
+    }
+
+    // Find the payment
+    const payment = purchase.payments.id(req.params.paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    // Calculate what the new balance would be
+    const oldPaymentAmount = payment.amount;
+    const newPaymentAmount = amount !== undefined ? amount : oldPaymentAmount;
+    const amountDifference = newPaymentAmount - oldPaymentAmount;
+
+    // Check if new amount is valid
+    const currentBalanceWithoutThisPayment = purchase.balanceAmount + oldPaymentAmount;
+    if (newPaymentAmount > currentBalanceWithoutThisPayment) {
+      return res.status(400).json({
+        message: `Payment amount (₹${newPaymentAmount}) cannot exceed available balance (₹${currentBalanceWithoutThisPayment})`
+      });
+    }
+
+    // Start transaction
+    session = await Purchase.startSession();
+    session.startTransaction();
+
+    // Delete all old ledger entries (both debit and credit)
+    const Ledger = (await import('../models/Ledger.js')).default;
+    if (payment.ledgerEntries && payment.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: payment.ledgerEntries } }, { session });
+    } else if (payment.ledgerEntry) {
+      // Backward compatibility for old payments with single ledgerEntry
+      await Ledger.deleteMany({ _id: payment.ledgerEntry }, { session });
+    }
+
+    // Update payment details
+    if (amount !== undefined) payment.amount = amount;
+    if (paymentMethod !== undefined) payment.paymentMethod = paymentMethod;
+    if (paymentDate !== undefined) payment.paymentDate = paymentDate;
+    if (referenceNumber !== undefined) payment.referenceNumber = referenceNumber;
+    if (notes !== undefined) payment.notes = notes;
+
+    // Create new ledger entries (debit and credit)
+    const ledgerEntries = await Ledger.createDoubleEntry(
+      req.organizationId || req.user.organizationId,
+      req.user._id,
+      [
+        {
+          account: 'ACCOUNTS_PAYABLE',
+          type: 'DEBIT',
+          amount: payment.amount,
+          party: 'SUPPLIER',
+          partyId: purchase.supplier._id,
+          partyModel: 'Supplier',
+          partyName: purchase.supplier.name || purchase.supplierName,
+          description: `Payment for ${purchase.purchaseNumber}`
+        },
+        {
+          account: payment.paymentMethod === 'CASH' ? 'CASH' : 'BANK',
+          type: 'CREDIT',
+          amount: payment.amount,
+          description: `Payment for ${purchase.purchaseNumber} via ${payment.paymentMethod}`
+        }
+      ],
+      {
+        referenceType: 'PAYMENT',
+        referenceId: purchase._id,
+        referenceModel: 'Purchase',
+        referenceNumber: purchase.purchaseNumber
+      },
+      session
+    );
+
+    // Store both ledger entry IDs (debit and credit)
+    payment.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // Initialize paidAmount and balanceAmount if they don't exist (for old purchases)
+    if (purchase.paidAmount === undefined || purchase.paidAmount === null) {
+      purchase.paidAmount = 0;
+    }
+    if (purchase.balanceAmount === undefined || purchase.balanceAmount === null) {
+      purchase.balanceAmount = purchase.grandTotal;
+    }
+
+    // Update purchase totals
+    purchase.paidAmount += amountDifference;
+    purchase.balanceAmount -= amountDifference;
+    purchase.paymentStatus = purchase.balanceAmount <= 0 ? 'PAID' : (purchase.paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    await purchase.save({ session });
+
+    // Update supplier balance (fetch within session to avoid race conditions)
+    const supplier = await Supplier.findById(purchase.supplier._id).session(session);
+    if (supplier) {
+      supplier.currentBalance -= amountDifference;
+      await supplier.save({ session });
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      payment,
+      purchase: {
+        paidAmount: purchase.paidAmount,
+        balanceAmount: purchase.balanceAmount,
+        paymentStatus: purchase.paymentStatus
+      },
+      message: 'Payment updated successfully'
+    });
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Edit payment error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// @route   DELETE /api/purchases/:id/payments/:paymentId
+// @desc    Delete a payment
+// @access  Private
+router.delete('/:id/payments/:paymentId', async (req, res) => {
+  let session = null;
+
+  try {
+    // Get purchase with tenant isolation
+    const purchase = await Purchase.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('supplier');
+
+    if (!purchase) {
+      return res.status(404).json({ message: 'Purchase not found' });
+    }
+
+    // Initialize payments array if it doesn't exist (for old purchases)
+    if (!purchase.payments) {
+      purchase.payments = [];
+    }
+
+    // Find the payment
+    const payment = purchase.payments.id(req.params.paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    const paymentAmount = payment.amount;
+
+    // Start transaction
+    session = await Purchase.startSession();
+    session.startTransaction();
+
+    // Delete all ledger entries (both debit and credit)
+    const Ledger = (await import('../models/Ledger.js')).default;
+    if (payment.ledgerEntries && payment.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: payment.ledgerEntries } }, { session });
+    } else if (payment.ledgerEntry) {
+      // Backward compatibility for old payments with single ledgerEntry
+      await Ledger.deleteMany({ _id: payment.ledgerEntry }, { session });
+    }
+
+    // Remove payment from array
+    purchase.payments.pull(req.params.paymentId);
+
+    // Initialize paidAmount and balanceAmount if they don't exist (for old purchases)
+    if (purchase.paidAmount === undefined || purchase.paidAmount === null) {
+      purchase.paidAmount = 0;
+    }
+    if (purchase.balanceAmount === undefined || purchase.balanceAmount === null) {
+      purchase.balanceAmount = purchase.grandTotal;
+    }
+
+    // Update purchase totals
+    purchase.paidAmount -= paymentAmount;
+    purchase.balanceAmount += paymentAmount;
+    purchase.paymentStatus = purchase.balanceAmount >= purchase.grandTotal ? 'UNPAID' : (purchase.paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    await purchase.save({ session });
+
+    // Update supplier balance (fetch within session to avoid race conditions)
+    const supplier = await Supplier.findById(purchase.supplier._id).session(session);
+    if (supplier) {
+      supplier.currentBalance += paymentAmount;
+      await supplier.save({ session });
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      purchase: {
+        paidAmount: purchase.paidAmount,
+        balanceAmount: purchase.balanceAmount,
+        paymentStatus: purchase.paymentStatus
+      },
+      message: 'Payment deleted successfully'
+    });
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Delete payment error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
   }
 });
 
