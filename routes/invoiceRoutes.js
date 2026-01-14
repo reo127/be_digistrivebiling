@@ -352,6 +352,53 @@ router.post('/', async (req, res) => {
     // Post to ledger (double-entry accounting)
     const ledgerEntries = await postSalesToLedger(invoice, req.user._id, req.organizationId || req.user.organizationId);
     invoice.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // If initial payment was made during invoice creation, create payment entry with ledger
+    if (paidAmount > 0) {
+      // Create ledger entries for the initial payment
+      const paymentLedgerEntries = await Ledger.createDoubleEntry(
+        req.organizationId || req.user.organizationId,
+        req.user._id,
+        [
+          {
+            account: invoiceData.paymentMethod === 'CASH' ? 'CASH' : 'BANK',
+            type: 'DEBIT',
+            amount: paidAmount,
+            description: `Initial payment for ${invoice.invoiceNumber} via ${invoiceData.paymentMethod || 'CASH'}`
+          },
+          {
+            account: 'ACCOUNTS_RECEIVABLE',
+            type: 'CREDIT',
+            amount: paidAmount,
+            party: customer ? 'CUSTOMER' : undefined,
+            partyId: customer ? customer._id : undefined,
+            partyModel: customer ? 'Customer' : undefined,
+            partyName: customer ? customer.name : invoiceData.customerName,
+            description: `Initial payment for ${invoice.invoiceNumber}`
+          }
+        ],
+        {
+          referenceType: 'PAYMENT',
+          referenceId: invoice._id,
+          referenceModel: 'Invoice',
+          referenceNumber: invoice.invoiceNumber
+        }
+      );
+
+      const initialPayment = {
+        amount: paidAmount,
+        paymentMethod: invoiceData.paymentMethod || 'CASH',
+        paymentDate: invoiceData.invoiceDate || new Date(),
+        referenceNumber: invoiceData.billNumber || '',
+        notes: 'Initial payment during invoice creation',
+        createdBy: req.user._id,
+        createdAt: new Date(),
+        ledgerEntries: paymentLedgerEntries.map(entry => entry._id)
+      };
+
+      invoice.payments.push(initialPayment);
+    }
+
     await invoice.save();
 
     res.status(201).json(invoice);
@@ -710,17 +757,11 @@ router.put('/:id', async (req, res) => {
       discount
     );
 
-    // Preserve paid amount, recalculate balance
-    const paidAmount = invoiceData.paidAmount !== undefined ? invoiceData.paidAmount : oldInvoice.paidAmount;
-    
-    if (paidAmount < 0) {
-      return res.status(400).json({ message: 'Paid amount cannot be negative' });
-    }
-    if (paidAmount > totals.grandTotal) {
-      return res.status(400).json({
-        message: `Paid amount (₹${paidAmount}) cannot exceed grand total (₹${totals.grandTotal})`
-      });
-    }
+    // Calculate paidAmount from payments array to maintain consistency
+    // DO NOT allow direct paidAmount manipulation - it must be managed via payment entries
+    const paidAmount = oldInvoice.payments && oldInvoice.payments.length > 0
+      ? oldInvoice.payments.reduce((sum, payment) => sum + payment.amount, 0)
+      : 0;
 
     const balanceAmount = totals.grandTotal - paidAmount;
     const paymentStatus = balanceAmount <= 0 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
@@ -966,6 +1007,390 @@ router.delete('/:id', async (req, res) => {
       await session.abortTransaction();
     }
     console.error('Invoice deletion error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// @route   POST /api/invoices/:id/payments
+// @desc    Add a new payment to invoice
+// @access  Private
+router.post('/:id/payments', async (req, res) => {
+  let session = null;
+
+  try {
+    const { amount, paymentMethod, paymentDate, referenceNumber, notes } = req.body;
+
+    // Validate input
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: 'Payment amount must be greater than 0' });
+    }
+
+    if (!paymentMethod) {
+      return res.status(400).json({ message: 'Payment method is required' });
+    }
+
+    // Get invoice with tenant isolation
+    const invoice = await Invoice.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('customer');
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // Validate payment amount doesn't exceed balance
+    if (amount > invoice.balanceAmount) {
+      return res.status(400).json({
+        message: `Payment amount (₹${amount}) cannot exceed balance amount (₹${invoice.balanceAmount})`
+      });
+    }
+
+    // Start transaction
+    session = await Invoice.startSession();
+    session.startTransaction();
+
+    // Create payment entry
+    const payment = {
+      amount,
+      paymentMethod,
+      paymentDate: paymentDate || new Date(),
+      referenceNumber,
+      notes,
+      createdBy: req.user._id,
+      createdAt: new Date()
+    };
+
+    // Create ledger entry for this payment
+    const Ledger = (await import('../models/Ledger.js')).default;
+    const ledgerEntries = await Ledger.createDoubleEntry(
+      req.organizationId || req.user.organizationId,
+      req.user._id,
+      [
+        {
+          account: paymentMethod === 'CASH' ? 'CASH' : 'BANK',
+          type: 'DEBIT',
+          amount: amount,
+          description: `Payment received for ${invoice.invoiceNumber} via ${paymentMethod}`
+        },
+        {
+          account: 'ACCOUNTS_RECEIVABLE',
+          type: 'CREDIT',
+          amount: amount,
+          party: 'CUSTOMER',
+          partyId: invoice.customer._id,
+          partyModel: 'Customer',
+          partyName: invoice.customer.name || invoice.customerName,
+          description: `Payment received for ${invoice.invoiceNumber}`
+        }
+      ],
+      {
+        referenceType: 'PAYMENT',
+        referenceId: invoice._id,
+        referenceModel: 'Invoice',
+        referenceNumber: invoice.invoiceNumber
+      },
+      session
+    );
+
+    // Store both ledger entry IDs (debit and credit)
+    payment.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // Initialize payments array if it doesn't exist (for old invoices)
+    if (!invoice.payments) {
+      invoice.payments = [];
+    }
+
+    // Initialize paidAmount and balanceAmount if they don't exist (for old invoices)
+    if (invoice.paidAmount === undefined || invoice.paidAmount === null) {
+      invoice.paidAmount = 0;
+    }
+    if (invoice.balanceAmount === undefined || invoice.balanceAmount === null) {
+      invoice.balanceAmount = invoice.grandTotal;
+    }
+
+    // Add payment to invoice
+    invoice.payments.push(payment);
+
+    // Update invoice totals
+    const oldPaidAmount = invoice.paidAmount;
+    const oldBalanceAmount = invoice.balanceAmount;
+
+    invoice.paidAmount = oldPaidAmount + amount;
+    invoice.balanceAmount = oldBalanceAmount - amount;
+    invoice.paymentStatus = invoice.balanceAmount <= 0 ? 'PAID' : 'PARTIAL';
+
+    await invoice.save({ session });
+
+    // Update customer balance (fetch within session to avoid race conditions)
+    const Customer = (await import('../models/Customer.js')).default;
+    const customer = await Customer.findById(invoice.customer._id).session(session);
+    if (customer) {
+      customer.outstandingBalance -= amount; // Reduce customer balance (they owe us less)
+      await customer.save({ session });
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.status(201).json({
+      success: true,
+      payment: invoice.payments[invoice.payments.length - 1],
+      invoice: {
+        paidAmount: invoice.paidAmount,
+        balanceAmount: invoice.balanceAmount,
+        paymentStatus: invoice.paymentStatus
+      },
+      message: 'Payment added successfully'
+    });
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Add payment error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// @route   PUT /api/invoices/:id/payments/:paymentId
+// @desc    Edit a payment
+// @access  Private
+router.put('/:id/payments/:paymentId', async (req, res) => {
+  let session = null;
+
+  try {
+    const { amount, paymentMethod, paymentDate, referenceNumber, notes } = req.body;
+
+    // Validate input
+    if (amount !== undefined && amount <= 0) {
+      return res.status(400).json({ message: 'Payment amount must be greater than 0' });
+    }
+
+    // Get invoice with tenant isolation
+    const invoice = await Invoice.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('customer');
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // Initialize payments array if it doesn't exist (for old invoices)
+    if (!invoice.payments) {
+      invoice.payments = [];
+    }
+
+    // Find the payment
+    const payment = invoice.payments.id(req.params.paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    // Calculate what the new balance would be
+    const oldPaymentAmount = payment.amount;
+    const newPaymentAmount = amount !== undefined ? amount : oldPaymentAmount;
+    const amountDifference = newPaymentAmount - oldPaymentAmount;
+
+    // Check if new amount is valid
+    const currentBalanceWithoutThisPayment = invoice.balanceAmount + oldPaymentAmount;
+    if (newPaymentAmount > currentBalanceWithoutThisPayment) {
+      return res.status(400).json({
+        message: `Payment amount (₹${newPaymentAmount}) cannot exceed available balance (₹${currentBalanceWithoutThisPayment})`
+      });
+    }
+
+    // Start transaction
+    session = await Invoice.startSession();
+    session.startTransaction();
+
+    // Delete all old ledger entries (both debit and credit)
+    const Ledger = (await import('../models/Ledger.js')).default;
+    if (payment.ledgerEntries && payment.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: payment.ledgerEntries } }, { session });
+    } else if (payment.ledgerEntry) {
+      // Backward compatibility for old payments with single ledgerEntry
+      await Ledger.deleteMany({ _id: payment.ledgerEntry }, { session });
+    }
+
+    // Update payment details
+    if (amount !== undefined) payment.amount = amount;
+    if (paymentMethod !== undefined) payment.paymentMethod = paymentMethod;
+    if (paymentDate !== undefined) payment.paymentDate = paymentDate;
+    if (referenceNumber !== undefined) payment.referenceNumber = referenceNumber;
+    if (notes !== undefined) payment.notes = notes;
+
+    // Create new ledger entries (debit and credit)
+    const ledgerEntries = await Ledger.createDoubleEntry(
+      req.organizationId || req.user.organizationId,
+      req.user._id,
+      [
+        {
+          account: payment.paymentMethod === 'CASH' ? 'CASH' : 'BANK',
+          type: 'DEBIT',
+          amount: payment.amount,
+          description: `Payment received for ${invoice.invoiceNumber} via ${payment.paymentMethod}`
+        },
+        {
+          account: 'ACCOUNTS_RECEIVABLE',
+          type: 'CREDIT',
+          amount: payment.amount,
+          party: 'CUSTOMER',
+          partyId: invoice.customer._id,
+          partyModel: 'Customer',
+          partyName: invoice.customer.name || invoice.customerName,
+          description: `Payment received for ${invoice.invoiceNumber}`
+        }
+      ],
+      {
+        referenceType: 'PAYMENT',
+        referenceId: invoice._id,
+        referenceModel: 'Invoice',
+        referenceNumber: invoice.invoiceNumber
+      },
+      session
+    );
+
+    // Store both ledger entry IDs (debit and credit)
+    payment.ledgerEntries = ledgerEntries.map(entry => entry._id);
+
+    // Initialize paidAmount and balanceAmount if they don't exist (for old invoices)
+    if (invoice.paidAmount === undefined || invoice.paidAmount === null) {
+      invoice.paidAmount = 0;
+    }
+    if (invoice.balanceAmount === undefined || invoice.balanceAmount === null) {
+      invoice.balanceAmount = invoice.grandTotal;
+    }
+
+    // Update invoice totals
+    invoice.paidAmount += amountDifference;
+    invoice.balanceAmount -= amountDifference;
+    invoice.paymentStatus = invoice.balanceAmount <= 0 ? 'PAID' : (invoice.paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    await invoice.save({ session });
+
+    // Update customer balance (fetch within session to avoid race conditions)
+    const Customer = (await import('../models/Customer.js')).default;
+    const customer = await Customer.findById(invoice.customer._id).session(session);
+    if (customer) {
+      customer.outstandingBalance -= amountDifference;
+      await customer.save({ session });
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      payment,
+      invoice: {
+        paidAmount: invoice.paidAmount,
+        balanceAmount: invoice.balanceAmount,
+        paymentStatus: invoice.paymentStatus
+      },
+      message: 'Payment updated successfully'
+    });
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Edit payment error:', error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// @route   DELETE /api/invoices/:id/payments/:paymentId
+// @desc    Delete a payment
+// @access  Private
+router.delete('/:id/payments/:paymentId', async (req, res) => {
+  let session = null;
+
+  try {
+    // Get invoice with tenant isolation
+    const invoice = await Invoice.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('customer');
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    // Initialize payments array if it doesn't exist (for old invoices)
+    if (!invoice.payments) {
+      invoice.payments = [];
+    }
+
+    // Find the payment
+    const payment = invoice.payments.id(req.params.paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    const paymentAmount = payment.amount;
+
+    // Start transaction
+    session = await Invoice.startSession();
+    session.startTransaction();
+
+    // Delete all ledger entries (both debit and credit)
+    const Ledger = (await import('../models/Ledger.js')).default;
+    if (payment.ledgerEntries && payment.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: payment.ledgerEntries } }, { session });
+    } else if (payment.ledgerEntry) {
+      // Backward compatibility for old payments with single ledgerEntry
+      await Ledger.deleteMany({ _id: payment.ledgerEntry }, { session });
+    }
+
+    // Remove payment from array
+    invoice.payments.pull(req.params.paymentId);
+
+    // Initialize paidAmount and balanceAmount if they don't exist (for old invoices)
+    if (invoice.paidAmount === undefined || invoice.paidAmount === null) {
+      invoice.paidAmount = 0;
+    }
+    if (invoice.balanceAmount === undefined || invoice.balanceAmount === null) {
+      invoice.balanceAmount = invoice.grandTotal;
+    }
+
+    // Update invoice totals
+    invoice.paidAmount -= paymentAmount;
+    invoice.balanceAmount += paymentAmount;
+    invoice.paymentStatus = invoice.balanceAmount >= invoice.grandTotal ? 'UNPAID' : (invoice.paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    await invoice.save({ session });
+
+    // Update customer balance (fetch within session to avoid race conditions)
+    const Customer = (await import('../models/Customer.js')).default;
+    const customer = await Customer.findById(invoice.customer._id).session(session);
+    if (customer) {
+      customer.outstandingBalance += paymentAmount;
+      await customer.save({ session });
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      invoice: {
+        paidAmount: invoice.paidAmount,
+        balanceAmount: invoice.balanceAmount,
+        paymentStatus: invoice.paymentStatus
+      },
+      message: 'Payment deleted successfully'
+    });
+  } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Delete payment error:', error);
     res.status(500).json({ message: error.message });
   } finally {
     if (session) {

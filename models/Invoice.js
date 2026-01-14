@@ -136,6 +136,38 @@ const invoiceSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Multiple payment tracking
+  payments: [{
+    amount: {
+      type: Number,
+      required: true
+    },
+    paymentMethod: {
+      type: String,
+      enum: ['CASH', 'UPI', 'CARD', 'CHEQUE', 'BANK_TRANSFER', 'CREDIT_NOTE', 'OTHER'],
+      required: true
+    },
+    paymentDate: {
+      type: Date,
+      default: Date.now,
+      required: true
+    },
+    referenceNumber: String,
+    notes: String,
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    // Ledger entries for this payment (debit and credit)
+    ledgerEntries: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger'
+    }]
+  }],
   paymentDetails: {
     type: String
   },
