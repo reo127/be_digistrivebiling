@@ -48,8 +48,7 @@ const salesReturnSchema = new mongoose.Schema({
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Organization',
-    required: true,
-    index: true
+    required: true
   },
   userId: {
     type: mongoose.Schema.Types.ObjectId,

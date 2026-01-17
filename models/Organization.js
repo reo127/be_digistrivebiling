@@ -5,7 +5,6 @@ const organizationSchema = new mongoose.Schema({
     organizationName: {
         type: String,
         required: true,
-        unique: true,
         trim: true
     },
     displayName: {
@@ -15,7 +14,6 @@ const organizationSchema = new mongoose.Schema({
     email: {
         type: String,
         required: true,
-        unique: true,
         lowercase: true,
         trim: true
     },
