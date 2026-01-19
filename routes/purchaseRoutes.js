@@ -1166,14 +1166,17 @@ router.delete('/:id/payments/:paymentId', async (req, res) => {
 });
 
 // @route   DELETE /api/purchases/:id
-// @desc    Delete purchase (with validations)
+// @desc    Delete purchase and associated products (batches)
 // @access  Private
-router.delete('/:id', protect, async (req, res) => {
+router.delete('/:id', async (req, res) => {
+  let session = null;
+
   try {
-    const purchase = await Purchase.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+    // Get purchase with tenant isolation and full details
+    const purchase = await Purchase.findOne(addOrgFilter(req, { _id: req.params.id }))
+      .populate('supplier')
+      .populate('items.batch')
+      .populate('items.product');
 
     if (!purchase) {
       return res.status(404).json({ message: 'Purchase not found' });
@@ -1186,13 +1189,74 @@ router.delete('/:id', protect, async (req, res) => {
       });
     }
 
-    // Warning: This would require reversing inventory and ledger entries
-    // For now, we'll just mark it as a soft delete or prevent deletion
-    return res.status(400).json({
-      message: 'Purchase deletion not allowed. Please create a purchase return instead.'
+    // Start transaction
+    session = await Purchase.startSession();
+    session.startTransaction();
+
+    // Delete all batches associated with this purchase
+    const Batch = (await import('../models/Batch.js')).default;
+    const batchIds = purchase.items.map(item => item.batch).filter(Boolean);
+
+    if (batchIds.length > 0) {
+      await Batch.deleteMany({ _id: { $in: batchIds } }, { session });
+    }
+
+    // Update product stock quantities
+    const { updateProductTotalStock } = await import('../utils/inventoryManager.js');
+    for (const item of purchase.items) {
+      if (item.product && item.product._id) {
+        await updateProductTotalStock(
+          item.product._id,
+          req.user._id,
+          req.organizationId || req.user.organizationId,
+          session
+        );
+      }
+    }
+
+    // Delete ledger entries
+    const Ledger = (await import('../models/Ledger.js')).default;
+    if (purchase.ledgerEntries && purchase.ledgerEntries.length > 0) {
+      await Ledger.deleteMany({ _id: { $in: purchase.ledgerEntries } }, { session });
+    }
+
+    // Delete payment ledger entries
+    if (purchase.payments && purchase.payments.length > 0) {
+      for (const payment of purchase.payments) {
+        if (payment.ledgerEntries && payment.ledgerEntries.length > 0) {
+          await Ledger.deleteMany({ _id: { $in: payment.ledgerEntries } }, { session });
+        }
+      }
+    }
+
+    // Update supplier totals
+    const supplier = await Supplier.findById(purchase.supplier._id).session(session);
+    if (supplier) {
+      supplier.currentBalance -= purchase.balanceAmount;
+      supplier.totalPurchases -= purchase.grandTotal;
+      await supplier.save({ session });
+    }
+
+    // Delete the purchase
+    await Purchase.deleteOne({ _id: purchase._id }, { session });
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      message: 'Purchase and associated products deleted successfully'
     });
   } catch (error) {
+    if (session) {
+      await session.abortTransaction();
+    }
+    console.error('Delete purchase error:', error);
     res.status(500).json({ message: error.message });
+  } finally {
+    if (session) {
+      session.endSession();
+    }
   }
 });
 
