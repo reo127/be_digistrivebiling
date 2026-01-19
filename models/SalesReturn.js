@@ -150,23 +150,39 @@ salesReturnSchema.index({ organizationId: 1, creditNoteNumber: 1 }, { unique: tr
 salesReturnSchema.index({ organizationId: 1, customer: 1 });
 
 // Auto-increment credit note number using atomic counter (per organization)
+// Auto-increment credit note number using atomic counter (per organization)
+// Format: CN-YYYY-OO-XXXX (OO = first 2 chars of org name, continuous sequence)
 salesReturnSchema.pre('save', async function (next) {
   if (this.isNew && !this.creditNoteNumber) {
     const Counter = mongoose.model('Counter');
+    const Organization = mongoose.model('Organization');
 
-    const date = new Date();
+    // Get organization details
+    const org = await Organization.findById(this.organizationId).select('organizationName');
+    if (!org) {
+      throw new Error('Organization not found');
+    }
+
+    // Extract first 2 characters of organization name (uppercase)
+    const orgInitials = org.organizationName
+      .trim()
+      .substring(0, 2)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '') || 'XX'; // Fallback to 'XX' if no valid chars
+
+    const date = this.returnDate || new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
-    const yearMonth = `${year}${month}`;
 
-    // Get next sequence number atomically - NO RACE CONDITION!
+    // Get next sequence number atomically - continuous, never resets
     const sequence = await Counter.getNextSequence(
       this.organizationId,
       'salesReturn',
-      yearMonth
+      String(year) // Use year only for continuous numbering
     );
 
-    this.creditNoteNumber = `CN-${yearMonth}-${String(sequence).padStart(4, '0')}`;
+    // Format: CN-2026-01-RA-0001 (for "Ramesh Medicals" in January)
+    this.creditNoteNumber = `CN-${year}-${month}-${orgInitials}-${String(sequence).padStart(4, '0')}`;
   }
   next();
 });

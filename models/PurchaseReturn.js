@@ -134,22 +134,39 @@ purchaseReturnSchema.index({ organizationId: 1, debitNoteNumber: 1 }, { unique: 
 purchaseReturnSchema.index({ organizationId: 1, supplier: 1 });
 
 // Auto-increment debit note number (per organization)
+// Auto-increment debit note number using atomic counter (per organization)
+// Format: DN-YYYY-OO-XXXX (OO = first 2 chars of org name, continuous sequence)
 purchaseReturnSchema.pre('save', async function (next) {
-  if (this.isNew) {
-    const lastReturn = await this.constructor.findOne({
-      organizationId: this.organizationId
-    }).sort({ createdAt: -1 });
+  if (this.isNew && !this.debitNoteNumber) {
+    const Counter = mongoose.model('Counter');
+    const Organization = mongoose.model('Organization');
 
-    let nextNumber = 1;
-    if (lastReturn && lastReturn.debitNoteNumber) {
-      const lastNumber = parseInt(lastReturn.debitNoteNumber.split('-').pop());
-      nextNumber = lastNumber + 1;
+    // Get organization details
+    const org = await Organization.findById(this.organizationId).select('organizationName');
+    if (!org) {
+      throw new Error('Organization not found');
     }
 
-    const date = new Date();
+    // Extract first 2 characters of organization name (uppercase)
+    const orgInitials = org.organizationName
+      .trim()
+      .substring(0, 2)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '') || 'XX'; // Fallback to 'XX' if no valid chars
+
+    const date = this.returnDate || new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
-    this.debitNoteNumber = `DN-${year}${month}-${String(nextNumber).padStart(4, '0')}`;
+
+    // Get next sequence number atomically - continuous, never resets
+    const sequence = await Counter.getNextSequence(
+      this.organizationId,
+      'purchaseReturn',
+      String(year) // Use year only for continuous numbering
+    );
+
+    // Format: DN-2026-01-RA-0001 (for "Ramesh Medicals" in January)
+    this.debitNoteNumber = `DN-${year}-${month}-${orgInitials}-${String(sequence).padStart(4, '0')}`;
   }
   next();
 });

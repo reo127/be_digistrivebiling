@@ -250,23 +250,37 @@ purchaseSchema.index({ organizationId: 1, supplier: 1 });
 purchaseSchema.index({ organizationId: 1, paymentStatus: 1 });
 
 // Auto-increment purchase number using atomic counter (per organization)
+// Format: PUR-YYYY-OO-XXXX (OO = first 2 chars of org name, continuous sequence)
 purchaseSchema.pre('save', async function (next) {
   if (this.isNew && !this.purchaseNumber) {
     const Counter = mongoose.model('Counter');
+    const Organization = mongoose.model('Organization');
 
-    const date = new Date();
+    // Get organization details
+    const org = await Organization.findById(this.organizationId).select('organizationName');
+    if (!org) {
+      throw new Error('Organization not found');
+    }
+
+    // Extract first 2 characters of organization name (uppercase)
+    const orgInitials = org.organizationName
+      .trim()
+      .substring(0, 2)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '') || 'XX'; // Fallback to 'XX' if no valid chars
+
+    const date = this.purchaseDate || new Date();
     const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const yearMonth = `${year}${month}`;
 
-    // Get next sequence number atomically - NO RACE CONDITION!
+    // Get next sequence number atomically - continuous, never resets
     const sequence = await Counter.getNextSequence(
       this.organizationId,
       'purchase',
-      yearMonth
+      String(year) // Use year only for continuous numbering
     );
 
-    this.purchaseNumber = `PUR-${yearMonth}-${String(sequence).padStart(4, '0')}`;
+    // Format: PUR-2026-RA-0001 (for "Ramesh Medicals")
+    this.purchaseNumber = `PUR-${year}-${orgInitials}-${String(sequence).padStart(6, '0')}`;
   }
   next();
 });
