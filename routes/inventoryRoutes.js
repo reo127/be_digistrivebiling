@@ -15,6 +15,41 @@ const router = express.Router();
 router.use(protect);
 router.use(tenantIsolation);
 
+// @route   GET /api/inventory/batches
+// @desc    Get all batches with product info (optimized for inventory page)
+// @access  Private
+router.get('/batches', async (req, res) => {
+  try {
+    const batches = await Batch.find({
+      organizationId: req.organizationId,
+      isActive: true
+    })
+      .select('batchNo expiryDate quantity mrp sellingPrice purchasePrice gstRate product supplier') // Only needed fields
+      .populate('product', 'name genericName unit') // Only needed product fields
+      .populate('supplier', 'name')
+      .lean() // Convert to plain JS objects (faster, less memory)
+      .sort({ expiryDate: 1, createdAt: -1 }); // Sort by expiry date, then newest first
+
+    // Transform to match frontend expectations
+    const batchesWithProductInfo = batches.map(batch => ({
+      _id: batch._id,
+      batchNo: batch.batchNo,
+      expiryDate: batch.expiryDate,
+      quantity: batch.quantity,
+      mrp: batch.mrp,
+      sellingPrice: batch.sellingPrice,
+      purchasePrice: batch.purchasePrice,
+      gstRate: batch.gstRate,
+      product: batch.product,
+      productInfo: batch.product // Add productInfo field for compatibility
+    }));
+
+    res.json(batchesWithProductInfo);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @route   GET /api/inventory/batches/product/:productId
 // @desc    Get available batches for a product (FIFO sorted)
 // @access  Private
