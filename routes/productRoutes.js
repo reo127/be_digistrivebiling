@@ -1,5 +1,6 @@
 import express from 'express';
 import Product from '../models/Product.js';
+import Batch from '../models/Batch.js';
 import { protect } from '../middleware/auth.js';
 import tenantIsolation, { addOrgFilter } from '../middleware/tenantIsolation.js';
 import { requirePermission } from '../middleware/requireSuperAdmin.js';
@@ -10,6 +11,84 @@ const router = express.Router();
 // Apply authentication and tenant isolation to all routes
 router.use(protect);
 router.use(tenantIsolation);
+
+// IMPORTANT: Specific routes must come BEFORE /:id route to avoid conflicts
+
+// @route   GET /api/products/with-batches
+// @desc    Get all products with their batches
+// @access  Private
+router.get('/with-batches', async (req, res) => {
+  try {
+    const { search } = req.query;
+    let query = addOrgFilter(req, { isActive: true });
+
+    if (search) {
+      query.$text = { $search: search };
+    }
+
+    const products = await Product.find(query).sort({ name: 1 }).lean();
+
+    // For each product, fetch all active batches (including zero stock)
+    const productsWithBatches = await Promise.all(
+      products.map(async (product) => {
+        const batches = await Batch.find({
+          product: product._id,
+          isActive: true
+          // Note: Removed quantity filter to show all batches including zero stock
+        })
+        .sort({ createdAt: 1 }) // FIFO order
+        .lean();
+
+        return {
+          ...product,
+          batches: batches || []
+        };
+      })
+    );
+
+    res.json(productsWithBatches);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   GET /api/products/batches-for-invoice
+// @desc    Get all active batches grouped by product for invoice dropdown
+// @access  Private
+router.get('/batches-for-invoice', async (req, res) => {
+  try {
+    const batches = await Batch.find(
+      addOrgFilter(req, {
+        isActive: true,
+        quantity: { $gt: 0 }
+      })
+    )
+    .populate('product', 'name hsnCode unit')
+    .sort({ product: 1, createdAt: 1 }) // Group by product, FIFO within product
+    .lean();
+
+    // Format for dropdown: each batch as separate selectable item
+    const batchOptions = batches.map(batch => ({
+      batchId: batch._id,
+      productId: batch.product._id,
+      productName: batch.product.name,
+      batchNo: batch.batchNo || 'N/A',
+      sellingPrice: batch.sellingPrice,
+      mrp: batch.mrp,
+      gstRate: batch.gstRate,
+      availableQuantity: batch.quantity,
+      expiryDate: batch.expiryDate,
+      unit: batch.product.unit,
+      hsnCode: batch.product.hsnCode,
+      // Display label for dropdown
+      label: `${batch.product.name} - ₹${batch.sellingPrice} (Batch: ${batch.batchNo || 'N/A'}, Stock: ${batch.quantity}${batch.expiryDate ? `, Exp: ${new Date(batch.expiryDate).toLocaleDateString('en-GB')}` : ''})`
+    }));
+
+    res.json(batchOptions);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
 
 // @route   GET /api/products
 // @desc    Get all products
