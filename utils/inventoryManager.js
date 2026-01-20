@@ -287,6 +287,9 @@ export const findOrCreateBatchForPurchase = async (purchaseItem, userId, organiz
     // Add to existing batch
     batch.quantity += purchaseItem.quantity + (purchaseItem.freeQuantity || 0);
     await batch.save();
+
+    // Update product total stock
+    await updateProductTotalStock(batch.product, userId, organizationId);
   } else {
     // Create new batch - auto-generate batch number if not provided
     const batchNo = purchaseItem.batchNo || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

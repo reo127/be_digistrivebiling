@@ -15,7 +15,7 @@ router.use(tenantIsolation);
 // IMPORTANT: Specific routes must come BEFORE /:id route to avoid conflicts
 
 // @route   GET /api/products/with-batches
-// @desc    Get all products with their batches
+// @desc    Get all products with their batches (including inactive batches for display)
 // @access  Private
 router.get('/with-batches', async (req, res) => {
   try {
@@ -28,13 +28,13 @@ router.get('/with-batches', async (req, res) => {
 
     const products = await Product.find(query).sort({ name: 1 }).lean();
 
-    // For each product, fetch all active batches (including zero stock)
+    // For each product, fetch ALL batches (active + inactive) for display
     const productsWithBatches = await Promise.all(
       products.map(async (product) => {
         const batches = await Batch.find({
           product: product._id,
-          isActive: true
-          // Note: Removed quantity filter to show all batches including zero stock
+          organizationId: req.organizationId
+          // Note: Fetch ALL batches (active + inactive) so UI can show inactive with toggle
         })
         .sort({ createdAt: 1 }) // FIFO order
         .lean();

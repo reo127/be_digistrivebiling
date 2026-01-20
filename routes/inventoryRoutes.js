@@ -209,6 +209,37 @@ router.get('/valuation', async (req, res) => {
   }
 });
 
+// @route   PUT /api/inventory/batches/:id/toggle-active
+// @desc    Toggle batch active/inactive status
+// @access  Private
+router.put('/batches/:id/toggle-active', async (req, res) => {
+  try {
+    const batch = await Batch.findOne({
+      _id: req.params.id,
+      organizationId: req.organizationId
+    });
+
+    if (!batch) {
+      return res.status(404).json({ message: 'Batch not found' });
+    }
+
+    // Toggle isActive status
+    batch.isActive = !batch.isActive;
+    await batch.save();
+
+    // Update product total stock (will exclude inactive batches)
+    const { updateProductTotalStock } = await import('../utils/inventoryManager.js');
+    await updateProductTotalStock(batch.product, batch.userId, batch.organizationId);
+
+    res.json({
+      message: `Batch ${batch.isActive ? 'activated' : 'deactivated'} successfully`,
+      batch
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // @route   PUT /api/inventory/batches/:id
 // @desc    Update batch details (price, rack, etc.)
 // @access  Private
@@ -233,6 +264,75 @@ router.put('/batches/:id', async (req, res) => {
 
     await batch.save();
     res.json(batch);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// @route   DELETE /api/inventory/batches/:id
+// @desc    Delete batch (hard delete) and delete product if it's the last batch
+// @access  Private
+router.delete('/batches/:id', async (req, res) => {
+  try {
+    const batch = await Batch.findOne({
+      _id: req.params.id,
+      organizationId: req.organizationId
+    });
+
+    if (!batch) {
+      return res.status(404).json({ message: 'Batch not found' });
+    }
+
+    // Check if batch is referenced in any invoices, purchases, or returns
+    const Invoice = (await import('../models/Invoice.js')).default;
+    const Purchase = (await import('../models/Purchase.js')).default;
+    const SalesReturn = (await import('../models/SalesReturn.js')).default;
+    const PurchaseReturn = (await import('../models/PurchaseReturn.js')).default;
+
+    const [invoiceCount, purchaseCount, salesReturnCount, purchaseReturnCount] = await Promise.all([
+      Invoice.countDocuments({ 'items.batch': batch._id }),
+      Purchase.countDocuments({ 'items.batch': batch._id }),
+      SalesReturn.countDocuments({ 'items.batch': batch._id }),
+      PurchaseReturn.countDocuments({ 'items.batch': batch._id })
+    ]);
+
+    const totalReferences = invoiceCount + purchaseCount + salesReturnCount + purchaseReturnCount;
+
+    if (totalReferences > 0) {
+      return res.status(400).json({
+        message: `Cannot delete batch. It is referenced in ${totalReferences} transaction(s) (Invoices: ${invoiceCount}, Purchases: ${purchaseCount}, Sales Returns: ${salesReturnCount}, Purchase Returns: ${purchaseReturnCount}). Please deactivate instead.`
+      });
+    }
+
+    const productId = batch.product;
+    const userId = batch.userId;
+    const organizationId = batch.organizationId;
+
+    // Hard delete the batch (safe because no references exist)
+    await Batch.deleteOne({ _id: batch._id });
+
+    // Check if this was the last batch for this product
+    const remainingBatches = await Batch.countDocuments({
+      product: productId
+    });
+
+    if (remainingBatches === 0) {
+      // Delete the product if no batches remain
+      await Product.deleteOne({ _id: productId });
+      return res.json({
+        message: 'Batch and product deleted successfully (last batch)',
+        productDeleted: true
+      });
+    } else {
+      // Update product total stock (excluding deleted batch)
+      const { updateProductTotalStock } = await import('../utils/inventoryManager.js');
+      await updateProductTotalStock(productId, userId, organizationId);
+
+      return res.json({
+        message: 'Batch deleted successfully',
+        productDeleted: false
+      });
+    }
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
