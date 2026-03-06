@@ -240,11 +240,13 @@ router.post('/', async (req, res) => {
         }
 
         // Calculate GST for this item
+        // Use item.gstRate if user provided it (manual override), otherwise use batch.gstRate
+        const itemGstRate = (item.gstRate !== undefined && item.gstRate !== null) ? item.gstRate : batch.gstRate;
         const itemWithGST = calculateItemGST({
           quantity: item.quantity,
           sellingPrice: item.sellingPrice || batch.sellingPrice,
           discount: item.discount || 0,
-          gstRate: batch.gstRate
+          gstRate: itemGstRate
         }, taxType, 'invoice');
 
         // Deduct from batch
@@ -271,11 +273,13 @@ router.post('/', async (req, res) => {
 
         for (const batchSale of batchesForSale) {
           // Calculate GST for this portion
+          // Use item.gstRate if user provided it (manual override), otherwise use batch.gstRate
+          const batchItemGstRate = (item.gstRate !== undefined && item.gstRate !== null) ? item.gstRate : batchSale.gstRate;
           const itemWithGST = calculateItemGST({
             quantity: batchSale.quantity,
             sellingPrice: item.sellingPrice || batchSale.sellingPrice,
             discount: item.discount || 0,
-            gstRate: batchSale.gstRate
+            gstRate: batchItemGstRate
           }, taxType, 'invoice');
 
           // Deduct from batch
@@ -436,7 +440,7 @@ router.put('/:id', async (req, res) => {
 
     // Get shop settings for tax determination
     const shopSettings = await ShopSettings.findOne(addOrgFilter(req));
-    
+
     // Handle customer changes
     let customer = null;
     let taxType = invoiceData.taxType || oldInvoice.taxType || 'CGST_SGST';
@@ -503,7 +507,7 @@ router.put('/:id', async (req, res) => {
     // Identify inventory changes - compare old items vs new items
     const inventoryChanges = [];
     const newItemsMap = new Map();
-    
+
     // Build map of new items by product+batch
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -520,7 +524,7 @@ router.put('/:id', async (req, res) => {
         // Item removed - add stock back to original batch
         const returnedQty = oldItem.returnedQuantity || 0;
         const availableToReturn = oldItem.quantity - returnedQty;
-        
+
         if (availableToReturn > 0 && oldItem.batch) {
           inventoryChanges.push({
             type: 'REMOVE',
@@ -575,7 +579,7 @@ router.put('/:id', async (req, res) => {
     // Process new/modified items - validate stock and calculate GST
     const processedItems = [];
     const oldItemsMap = new Map();
-    
+
     // Build map of old items
     for (const oldItem of oldInvoice.items) {
       const key = oldItem.batch ? `${oldItem.product._id}_${oldItem.batch._id}` : null;
@@ -715,11 +719,13 @@ router.put('/:id', async (req, res) => {
         }
 
         // Calculate GST with new prices
+        // Use item.gstRate if user provided it (manual override), otherwise use batch.gstRate
+        const editItemGstRate = (item.gstRate !== undefined && item.gstRate !== null) ? item.gstRate : batch.gstRate;
         const itemWithGST = calculateItemGST({
           quantity: item.quantity,
           sellingPrice: item.sellingPrice !== undefined ? item.sellingPrice : oldItem.sellingPrice,
           discount: item.discount !== undefined ? item.discount : oldItem.discount,
-          gstRate: batch.gstRate
+          gstRate: editItemGstRate
         }, taxType, 'invoice');
 
         processedItems.push({
@@ -789,7 +795,7 @@ router.put('/:id', async (req, res) => {
 
     // Update customer balance if customer exists
     const customerChanged = (oldInvoice.customer?._id?.toString() !== customer?._id?.toString());
-    
+
     if (customerChanged) {
       // Reverse old customer balance
       if (oldInvoice.customer) {
